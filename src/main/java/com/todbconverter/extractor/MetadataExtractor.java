@@ -10,7 +10,7 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
 
-public class MetadataExtractor {
+public class MetadataExtractor implements IMetadataExtractor {
     private static final Logger logger = LoggerFactory.getLogger(MetadataExtractor.class);
     private final Connection connection;
 
@@ -18,6 +18,7 @@ public class MetadataExtractor {
         this.connection = connection;
     }
 
+    @Override
     public List<TableMetadata> extractAllTables(String schema) throws SQLException {
         List<TableMetadata> tables = new ArrayList<>();
         DatabaseMetaData metaData = connection.getMetaData();
@@ -37,6 +38,7 @@ public class MetadataExtractor {
         return tables;
     }
 
+    @Override
     public TableMetadata extractTableMetadata(String tableName, String schema) throws SQLException {
         TableMetadata table = new TableMetadata(tableName, schema);
 

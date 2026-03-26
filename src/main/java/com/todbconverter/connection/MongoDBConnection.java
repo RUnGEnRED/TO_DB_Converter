@@ -3,10 +3,11 @@ package com.todbconverter.connection;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoDatabase;
+import com.todbconverter.exception.ConnectionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class MongoDBConnection {
+public class MongoDBConnection implements IDatabaseConnector {
     private static final Logger logger = LoggerFactory.getLogger(MongoDBConnection.class);
 
     private final String connectionString;
@@ -28,17 +29,35 @@ public class MongoDBConnection {
         this.databaseName = databaseName;
     }
 
-    public MongoDatabase getDatabase() {
+    public MongoDatabase getDatabase() throws ConnectionException {
         if (mongoClient == null) {
-            logger.info("Connecting to MongoDB: {}", connectionString.replaceAll("://.*@", "://*****@"));
-            mongoClient = MongoClients.create(connectionString);
-            database = mongoClient.getDatabase(databaseName);
-            logger.info("Successfully connected to MongoDB database: {}", databaseName);
+            connect();
         }
         return database;
     }
 
-    public void close() {
+    @Override
+    public void connect() throws ConnectionException {
+        if (mongoClient == null) {
+            try {
+                logger.info("Connecting to MongoDB: {}", connectionString.replaceAll("://.*@", "://*****@"));
+                mongoClient = MongoClients.create(connectionString);
+                database = mongoClient.getDatabase(databaseName);
+                logger.info("Successfully connected to MongoDB database: {}", databaseName);
+            } catch (Exception e) {
+                logger.error("Target database connection failed", e);
+                throw new ConnectionException("Target database connection failed", e);
+            }
+        }
+    }
+
+    @Override
+    public boolean isConnected() {
+        return mongoClient != null;
+    }
+
+    @Override
+    public void disconnect() {
         if (mongoClient != null) {
             mongoClient.close();
             logger.info("MongoDB connection closed");

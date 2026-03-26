@@ -64,4 +64,18 @@ public class DatabaseConfig {
     public String getMongoConnectionString() {
         return properties.getProperty("mongo.connectionString");
     }
+
+    public enum ConversionDirection {
+        POSTGRES_TO_MONGO,
+        MONGO_TO_POSTGRES
+    }
+
+    public ConversionDirection getConversionDirection() {
+        String directionStr = properties.getProperty("conversion.direction", "POSTGRES_TO_MONGO");
+        try {
+            return ConversionDirection.valueOf(directionStr.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return ConversionDirection.POSTGRES_TO_MONGO;
+        }
+    }
 }

@@ -7,9 +7,10 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 
-public class DocumentTransformer {
+public class DocumentTransformer implements IDataTransformer {
     private static final Logger logger = LoggerFactory.getLogger(DocumentTransformer.class);
 
+    @Override
     public List<Map<String, Object>> transformToDocuments(
             TableMetadata parentTable,
             List<Map<String, Object>> parentRecords,
@@ -51,6 +52,7 @@ public class DocumentTransformer {
         }
     }
 
+    @Override
     public List<Map<String, Object>> aggregateOneToMany(
             TableMetadata parentTable,
             List<Map<String, Object>> parentRecords,
@@ -73,9 +75,8 @@ public class DocumentTransformer {
                         parentId, parentTable.getTableName(), childRecords, childTable
                     );
 
-                    if (!relatedChildren.isEmpty()) {
-                        document.put(childTableName, relatedChildren);
-                    }
+                    // Always include child array, even if empty (REQ-ERR-3)
+                    document.put(childTableName, relatedChildren);
                 }
             }
 
@@ -108,5 +109,13 @@ public class DocumentTransformer {
         }
 
         return related;
+    }
+
+    @Override
+    public Map<String, List<Map<String, Object>>> flattenToRelational(
+            String parentTableName,
+            List<Map<String, Object>> documents,
+            Map<String, TableMetadata> tablesMetadata) {
+        throw new UnsupportedOperationException("Flattening to relational is not supported in DocumentTransformer. Use UniversalTransformer instead.");
     }
 }

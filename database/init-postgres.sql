@@ -78,6 +78,6 @@ SELECT 'Klienci' as tabela, COUNT(*) as liczba FROM klient
 UNION ALL
 SELECT 'Produkty', COUNT(*) FROM produkt
 UNION ALL
-SELECT 'Zamówienia', COUNT(*) FROM zamowienie
+SELECT 'ZamÃ³wienia', COUNT(*) FROM zamowienie
 UNION ALL
-SELECT 'Pozycje zamówieñ', COUNT(*) FROM pozycja_zamowienia;
+SELECT 'Pozycje zamÃ³wieÅ„', COUNT(*) FROM pozycja_zamowienia;

@@ -9,11 +9,12 @@ import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-public class MongoDBExporter {
+public class MongoDBExporter implements IDocumentLoader {
     private static final Logger logger = LoggerFactory.getLogger(MongoDBExporter.class);
     private final MongoDatabase database;
     private final ObjectMapper objectMapper;
@@ -25,7 +26,8 @@ public class MongoDBExporter {
         this.objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
-    public void exportToCollection(String collectionName, List<Map<String, Object>> documents) {
+    @Override
+    public void loadDocuments(String collectionName, List<Map<String, Object>> documents) {
         if (documents.isEmpty()) {
             logger.warn("No documents to export to collection: {}", collectionName);
             return;
@@ -43,6 +45,22 @@ public class MongoDBExporter {
         logger.info("Exported {} documents to collection: {}", bsonDocuments.size(), collectionName);
     }
 
+    @Override
+    public void exportToJsonFile(String filePath, List<Map<String, Object>> documents) throws Exception {
+        if (documents.isEmpty()) {
+            logger.warn("No documents to export to file: {}", filePath);
+            return;
+        }
+        
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.registerModule(new JavaTimeModule());
+        mapper.enable(SerializationFeature.INDENT_OUTPUT);
+        
+        mapper.writeValue(new File(filePath), documents);
+        logger.info("Exported {} documents to file: {}", documents.size(), filePath);
+    }
+
+    @Override
     public void clearCollection(String collectionName) {
         MongoCollection<Document> collection = database.getCollection(collectionName);
         collection.deleteMany(new Document());
