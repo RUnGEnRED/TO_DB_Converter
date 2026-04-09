@@ -1,5 +1,6 @@
 package com.todbconverter.extractor;
 
+import com.todbconverter.model.ColumnMetadata;
 import com.todbconverter.model.TableMetadata;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,18 +28,24 @@ public class DataExtractor {
 
         logger.debug("Executing query: {}", query);
 
+        if (table.getColumns() == null || table.getColumns().isEmpty()) {
+            throw new SQLException("No columns defined in table metadata: " + table.getTableName());
+        }
+
         try (PreparedStatement stmt = connection.prepareStatement(query);
              ResultSet rs = stmt.executeQuery()) {
 
             while (rs.next()) {
                 Map<String, Object> record = new HashMap<>();
-                table.getColumns().forEach(column -> {
+                for (ColumnMetadata column : table.getColumns()) {
                     try {
                         record.put(column.getColumnName(), rs.getObject(column.getColumnName()));
                     } catch (SQLException e) {
-                        logger.error("Error extracting column: {}", column.getColumnName(), e);
+                        logger.error("Error extracting column '{}' from table {}: {}", 
+                            column.getColumnName(), table.getTableName(), e.getMessage());
+                        throw new SQLException("Failed to extract column: " + column.getColumnName(), e);
                     }
-                });
+                }
                 records.add(record);
             }
         }

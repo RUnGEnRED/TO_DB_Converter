@@ -7,7 +7,7 @@ import com.todbconverter.exception.ConnectionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class MongoDBConnection implements IDatabaseConnector {
+public class MongoDBConnection implements IDatabaseConnector, IMongoDBConnector {
     private static final Logger logger = LoggerFactory.getLogger(MongoDBConnection.class);
 
     private final String connectionString;
@@ -53,7 +53,12 @@ public class MongoDBConnection implements IDatabaseConnector {
 
     @Override
     public boolean isConnected() {
-        return mongoClient != null;
+        try {
+            return mongoClient != null && mongoClient.getDatabase(databaseName) != null;
+        } catch (Exception e) {
+            logger.error("Error checking MongoDB connection status", e);
+            return false;
+        }
     }
 
     @Override

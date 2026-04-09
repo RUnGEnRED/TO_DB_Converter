@@ -47,4 +47,6 @@ buildNumber.properties
 .classpath
 .settings/
 bin/
+
 plans/
+docs/

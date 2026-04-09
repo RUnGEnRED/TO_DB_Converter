@@ -1,99 +1,117 @@
-# DB Converter
+# TO DB Converter
 
-A tool for converting data between relational databases (PostgreSQL) and document databases (MongoDB) with object nesting support.
-
-## Project Description
-
-A Java application that dynamically analyzes the structure of relational databases, retrieves data along with relationship metadata, and transforms it into nested JSON documents in MongoDB. The system supports **bidirectional conversion** between PostgreSQL and MongoDB.
+A bidirectional tool for converting data between PostgreSQL (relational) and MongoDB (document) databases with automatic schema inference and relationship handling.
 
 ## Features
 
-- **PostgreSQL → MongoDB**: Convert relational tables to nested document structures
-- **MongoDB → PostgreSQL**: Flatten document structures into relational tables
-- **Metadata Extraction**: Read foreign keys, primary keys, and column information
-- **Universal Mapping**: Transform data between relational and object-oriented models
-- **Automatic Schema Inference**: Dynamically create table schemas from document structures
+- **PostgreSQL → MongoDB**: Convert relational tables to nested JSON documents with embedded relationships
+- **MongoDB → PostgreSQL**: Flatten document structures into relational tables with foreign keys
+- **Automatic Schema Inference**: Dynamically creates table schemas from document structures
+- **Type Inference**: Automatically detects INTEGER, VARCHAR, TIMESTAMP types
+- **Relationship Preservation**: Maintains foreign key relationships in both directions
 
-## Technologies
-
-- **Language:** Java 21
-- **Build Tool:** Maven
-- **Databases:** 
-  - PostgreSQL 15 (Relational Layer)
-  - MongoDB 7 (Document Layer)
-- **Libraries:**
-  - PostgreSQL JDBC Driver
-  - MongoDB Java Driver
-  - Jackson (JSON mapping)
-  - SLF4J (logging)
-
-## Project Setup
-
-### Prerequisites
-- Docker Desktop installed and running
-- Java JDK 17 or newer
-- Maven 3.8+
-
-### Step 1: Start Databases
+## Quick Start
 
 ```bash
+# Start databases
 docker-compose up -d
-```
 
-Check if containers are running:
-```bash
-docker ps
-```
+# Build
+mvn clean package
 
-The following should be running:
-- `to_db_postgres` (mapped to port 5433)
-- `to_db_mongodb` (mapped to port 27018)
+# Run POSTGRES → MONGO
+java -jar target/to-db-converter-1.0-SNAPSHOT.jar -d POSTGRES_TO_MONGO
 
-### Step 2: Build Project
-
-```bash
-mvn clean install
-```
-
-### Step 3: Run Application
-
-```bash
-mvn exec:java -Dexec.mainClass="com.todbconverter.Main"
-```
-
-Or after building the JAR:
-
-```bash
-java -jar target/to-db-converter-1.0-SNAPSHOT.jar
+# Run MONGO → POSTGRES
+java -jar target/to-db-converter-1.0-SNAPSHOT.jar -d MONGO_TO_POSTGRES
 ```
 
 ## Configuration
 
-Edit `src/main/resources/application.properties` to configure conversion direction:
+Edit `src/main/resources/application.properties`:
 
-### PostgreSQL to MongoDB (default)
 ```properties
+# Conversion direction: POSTGRES_TO_MONGO | MONGO_TO_POSTGRES
 conversion.direction=POSTGRES_TO_MONGO
+
+# PostgreSQL source
+postgres.host=localhost
+postgres.port=5433
+postgres.database=source_db
+postgres.username=${POSTGRES_USER:postgres}
+postgres.password=${POSTGRES_PASSWORD:postgres}
+postgres.schema=public
+
+# MongoDB target
+mongo.host=localhost
+mongo.port=27018
+mongo.database=target_db
+mongo.username=${MONGO_USER:admin}
+mongo.password=${MONGO_PASSWORD:admin}
+
+# Drop existing tables before loading (MONGO_TO_POSTGRES only)
+postgres.drop.existing=true
 ```
 
-### MongoDB to PostgreSQL
-```properties
-conversion.direction=MONGO_TO_POSTGRES
+Or override direction via CLI:
+```bash
+java -jar target/to-db-converter-1.0-SNAPSHOT.jar -d POSTGRES_TO_MONGO
+java -jar target/to-db-converter-1.0-SNAPSHOT.jar -d MONGO_TO_POSTGRES
 ```
 
 ## Architecture
 
-The system follows an ETL (Extract, Transform, Load) pipeline:
-
-1. **Extract**: Retrieve data and metadata from source database
-2. **Transform**: Convert between relational and document models using foreign key relationships
-3. **Load**: Insert transformed data into target database
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  PostgreSQL     │────▶│ Universal         │────▶│   MongoDB       │
+│  (Source)       │     │ Transformer       │     │   (Target)      │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+        ▲                        │                        │
+        │                        │                        │
+        └──────────────┬─────────┴────────────────────────┘
+                       │
+        ┌──────────────▼──────────────────────────────┐
+        │              ETL Pipeline                  │
+        │  1. Extract (metadata + data)              │
+        │  2. Transform (relational ↔ document)      │
+        │  3. Load (insert into target)              │
+        └────────────────────────────────────────────┘
+```
 
 ### Key Components
 
-- **MetadataExtractor**: Reads table schemas, columns, primary keys, and foreign keys from PostgreSQL
-- **DataExtractor**: Retrieves flat relational data from PostgreSQL
-- **MongoExtractor**: Extracts documents from MongoDB collections
-- **UniversalTransformer**: Transforms data between relational and document formats
-- **PostgresLoader**: Creates tables and loads data into PostgreSQL
-- **MongoDBExporter**: Exports documents to MongoDB collections
+| Component | Description |
+|-----------|-------------|
+| `MetadataExtractor` | Reads table schemas, columns, PK/FK from PostgreSQL |
+| `DataExtractor` | Retrieves flat relational data |
+| `MongoExtractor` | Extracts documents from MongoDB collections |
+| `UniversalTransformer` | Bidirectional data transformation |
+| `PostgresLoader` | Creates tables, loads data, adds FKs |
+| `MongoDBExporter` | Exports documents to MongoDB collections |
+
+## Tech Stack
+
+- **Java 21** + Maven
+- **PostgreSQL 15** (source)
+- **MongoDB 7** (target)
+- PostgreSQL JDBC Driver, MongoDB Java Driver, Jackson, SLF4J
+
+## Development
+
+```bash
+# Run tests
+mvn test
+
+# Build JAR with dependencies
+mvn package
+
+# Clean build
+mvn clean
+```
+
+## Docker Ports
+
+| Service | Port |
+|---------|------|
+| PostgreSQL | 5433 |
+| MongoDB | 27018 |

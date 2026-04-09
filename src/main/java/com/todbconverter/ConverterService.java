@@ -3,8 +3,8 @@ package com.todbconverter;
 import com.mongodb.client.MongoDatabase;
 import com.todbconverter.config.DatabaseConfig;
 import com.todbconverter.connection.IDatabaseConnector;
-import com.todbconverter.connection.MongoDBConnection;
-import com.todbconverter.connection.PostgreSQLConnection;
+import com.todbconverter.connection.IMongoDBConnector;
+import com.todbconverter.connection.IPostgreSQLConnector;
 import com.todbconverter.extractor.DataExtractor;
 import com.todbconverter.extractor.IMetadataExtractor;
 import com.todbconverter.extractor.MetadataExtractor;
@@ -26,14 +26,20 @@ import java.util.Map;
 public class ConverterService {
     private static final Logger logger = LoggerFactory.getLogger(ConverterService.class);
 
-    private final IDatabaseConnector postgresConnection;
-    private final IDatabaseConnector mongoConnection;
+    private final IPostgreSQLConnector postgresConnection;
+    private final IMongoDBConnector mongoConnection;
     private final DatabaseConfig config;
+    private final DatabaseConfig.ConversionDirection direction;
 
     public ConverterService(DatabaseConfig config) {
+        this(config, null);
+    }
+
+    public ConverterService(DatabaseConfig config, String cliDirection) {
         this.config = config;
+        this.direction = config.overrideDirection(cliDirection);
         
-        this.postgresConnection = new PostgreSQLConnection(
+        this.postgresConnection = new com.todbconverter.connection.PostgreSQLConnection(
                 config.getPostgresHost(),
                 config.getPostgresPort(),
                 config.getPostgresDatabase(),
@@ -43,9 +49,9 @@ public class ConverterService {
 
         String mongoConnStr = config.getMongoConnectionString();
         if (mongoConnStr != null && !mongoConnStr.isEmpty()) {
-            this.mongoConnection = new MongoDBConnection(mongoConnStr, config.getMongoDatabase());
+            this.mongoConnection = new com.todbconverter.connection.MongoDBConnection(mongoConnStr, config.getMongoDatabase());
         } else {
-            this.mongoConnection = new MongoDBConnection(
+            this.mongoConnection = new com.todbconverter.connection.MongoDBConnection(
                     config.getMongoHost(),
                     config.getMongoPort(),
                     config.getMongoDatabase(),
@@ -60,7 +66,7 @@ public class ConverterService {
         postgresConnection.connect();
         mongoConnection.connect();
 
-        if (config.getConversionDirection() == DatabaseConfig.ConversionDirection.POSTGRES_TO_MONGO) {
+        if (direction == DatabaseConfig.ConversionDirection.POSTGRES_TO_MONGO) {
             convertPostgresToMongo();
         } else {
             convertMongoToPostgres();
@@ -71,7 +77,8 @@ public class ConverterService {
 
     private void convertPostgresToMongo() throws Exception {
         logger.info("Direction: POSTGRES -> MONGO");
-        Connection sqlConnection = ((PostgreSQLConnection) postgresConnection).getConnection();
+        
+        Connection sqlConnection = postgresConnection.getConnection();
         IMetadataExtractor metadataExtractor = new MetadataExtractor(sqlConnection);
         DataExtractor dataExtractor = new DataExtractor(sqlConnection);
 
@@ -88,7 +95,7 @@ public class ConverterService {
         }
 
         IDataTransformer transformer = new UniversalTransformer();
-        IDocumentLoader exporter = new MongoDBExporter(((MongoDBConnection) mongoConnection).getDatabase());
+        IDocumentLoader exporter = new MongoDBExporter(mongoConnection.getDatabase());
 
         for (TableMetadata table : tables) {
             String tableName = table.getTableName();
@@ -104,18 +111,19 @@ public class ConverterService {
 
     private void convertMongoToPostgres() throws Exception {
         logger.info("Direction: MONGO -> POSTGRES");
-        MongoDatabase mongoDb = ((MongoDBConnection) mongoConnection).getDatabase();
+        
+        MongoDatabase mongoDb = mongoConnection.getDatabase();
         MongoExtractor mongoExtractor = new MongoExtractor(mongoDb);
 
-        Connection sqlConnection = ((PostgreSQLConnection) postgresConnection).getConnection();
-        PostgresLoader sqlLoader = new PostgresLoader(sqlConnection);
+        Connection sqlConnection = postgresConnection.getConnection();
+        boolean dropTables = config.shouldDropExistingTables();
+        PostgresLoader sqlLoader = new PostgresLoader(sqlConnection, dropTables);
         IDataTransformer transformer = new UniversalTransformer();
 
         List<String> collections = mongoExtractor.listCollections();
         Map<String, TableMetadata> tablesMetadata = new HashMap<>();
         Map<String, List<Map<String, Object>>> allRelationalData = new HashMap<>();
 
-        // 1. Extract and Flatten
         for (String collectionName : collections) {
             List<Map<String, Object>> docs = mongoExtractor.extractDocuments(collectionName);
             
@@ -123,29 +131,26 @@ public class ConverterService {
                 transformer.flattenToRelational(collectionName, docs, tablesMetadata);
             
             for (Map.Entry<String, List<Map<String, Object>>> entry : relationalData.entrySet()) {
-                allRelationalData.putIfAbsent(entry.getKey(), new java.util.ArrayList<>());
-                allRelationalData.get(entry.getKey()).addAll(entry.getValue());
+                String tableName = entry.getKey();
+                List<Map<String, Object>> existingData = allRelationalData.get(tableName);
+                if (existingData != null && !existingData.isEmpty()) {
+                    logger.debug("Skipping {} - data already loaded from embedded documents", tableName);
+                    continue;
+                }
+                allRelationalData.putIfAbsent(tableName, new java.util.ArrayList<>());
+                allRelationalData.get(tableName).addAll(entry.getValue());
             }
         }
 
-        // 2. Create Tables
-        for (TableMetadata meta : tablesMetadata.values()) {
-            sqlLoader.createTable(meta);
-        }
-
-        // 3. Load Data
-        for (Map.Entry<String, List<Map<String, Object>>> entry : allRelationalData.entrySet()) {
-            sqlLoader.loadData(tablesMetadata.get(entry.getKey()), entry.getValue());
-        }
-
-        // 4. Add Foreign Keys (after data to avoid constraint issues during insert)
-        for (TableMetadata meta : tablesMetadata.values()) {
-            sqlLoader.addForeignKeys(meta);
-        }
+        sqlLoader.loadAllTables(tablesMetadata, allRelationalData);
     }
 
     public void close() {
-        postgresConnection.disconnect();
-        mongoConnection.disconnect();
+        if (postgresConnection != null) {
+            postgresConnection.disconnect();
+        }
+        if (mongoConnection != null) {
+            mongoConnection.disconnect();
+        }
     }
 }

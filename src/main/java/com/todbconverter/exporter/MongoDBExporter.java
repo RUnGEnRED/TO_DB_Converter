@@ -16,6 +16,7 @@ import java.util.Map;
 
 public class MongoDBExporter implements IDocumentLoader {
     private static final Logger logger = LoggerFactory.getLogger(MongoDBExporter.class);
+    private static final String VALID_COLLECTION_NAME_PATTERN = "^[a-zA-Z_][a-zA-Z0-9_]*$";
     private final MongoDatabase database;
     private final ObjectMapper objectMapper;
 
@@ -28,6 +29,9 @@ public class MongoDBExporter implements IDocumentLoader {
 
     @Override
     public void loadDocuments(String collectionName, List<Map<String, Object>> documents) {
+        if (!isValidCollectionName(collectionName)) {
+            throw new IllegalArgumentException("Invalid collection name: " + collectionName);
+        }
         if (documents.isEmpty()) {
             logger.warn("No documents to export to collection: {}", collectionName);
             return;
@@ -37,12 +41,21 @@ public class MongoDBExporter implements IDocumentLoader {
         List<Document> bsonDocuments = new ArrayList<>();
 
         for (Map<String, Object> doc : documents) {
-            Document bsonDoc = new Document(doc);
-            bsonDocuments.add(bsonDoc);
+            try {
+                Document bsonDoc = new Document(doc);
+                bsonDocuments.add(bsonDoc);
+            } catch (Exception e) {
+                logger.error("Failed to convert document to BSON: {}", e.getMessage());
+                throw new IllegalArgumentException("Document contains non-BSON-compatible types", e);
+            }
         }
 
         collection.insertMany(bsonDocuments);
         logger.info("Exported {} documents to collection: {}", bsonDocuments.size(), collectionName);
+    }
+
+    private boolean isValidCollectionName(String name) {
+        return name != null && !name.isEmpty() && name.matches(VALID_COLLECTION_NAME_PATTERN);
     }
 
     @Override
@@ -52,11 +65,9 @@ public class MongoDBExporter implements IDocumentLoader {
             return;
         }
         
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.registerModule(new JavaTimeModule());
-        mapper.enable(SerializationFeature.INDENT_OUTPUT);
-        
-        mapper.writeValue(new File(filePath), documents);
+        objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
+        objectMapper.writeValue(new File(filePath), documents);
+        objectMapper.disable(SerializationFeature.INDENT_OUTPUT);
         logger.info("Exported {} documents to file: {}", documents.size(), filePath);
     }
 
