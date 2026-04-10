@@ -334,6 +334,152 @@ class UniversalTransformerTest {
         assertTrue(relational.containsKey("departments"));
     }
 
+    @Test
+    void testFlattenToRelationalWithManyToManyIds() {
+        List<Map<String, Object>> docs = new ArrayList<>();
+        Map<String, Object> doc = new HashMap<>();
+        doc.put("_id", 1);
+        doc.put("name", "Student1");
+        doc.put("course_ids", Arrays.asList(101, 102, 103));
+        docs.add(doc);
+        
+        Map<String, TableMetadata> metaMap = new HashMap<>();
+        Map<String, List<Map<String, Object>>> relational = transformer.flattenToRelational("students", docs, metaMap);
+        
+        String junctionTableName = "students_course_junction";
+        assertTrue(relational.containsKey(junctionTableName), "Expected junction table");
+        
+        List<Map<String, Object>> junctionRows = relational.get(junctionTableName);
+        assertEquals(3, junctionRows.size());
+    }
+
+    @Test
+    void testFlattenToRelationalManyToManyCreatesTwoColumns() {
+        List<Map<String, Object>> docs = new ArrayList<>();
+        Map<String, Object> doc = new HashMap<>();
+        doc.put("_id", 1);
+        doc.put("name", "Student1");
+        doc.put("course_ids", Arrays.asList(101, 102));
+        docs.add(doc);
+        
+        Map<String, TableMetadata> metaMap = new HashMap<>();
+        transformer.flattenToRelational("students", docs, metaMap);
+        
+        String junctionTableName = "students_course_junction";
+        TableMetadata junctionMeta = metaMap.get(junctionTableName);
+        assertNotNull(junctionMeta, "Expected junction table metadata");
+        
+        List<ForeignKeyMetadata> fks = junctionMeta.getForeignKeys();
+        assertEquals(2, fks.size(), "Expected two foreign keys");
+    }
+
+    @Test
+    void testTransformToDocumentsManyToMany() {
+        TableMetadata studentTable = createStudentTableWithM2M();
+        TableMetadata courseTable = createCourseTableWithM2M();
+        
+        Map<String, TableMetadata> tablesMetadata = new HashMap<>();
+        tablesMetadata.put("students", studentTable);
+        tablesMetadata.put("courses", courseTable);
+        
+        Map<String, List<Map<String, Object>>> relatedData = new HashMap<>();
+        relatedData.put("students", Arrays.asList(
+                createMap("id", 1, "name", "Alice"),
+                createMap("id", 2, "name", "Bob")
+        ));
+        relatedData.put("courses", Arrays.asList(
+                createMap("id", 101, "title", "Math", "student_id", 1),
+                createMap("id", 102, "title", "Physics", "student_id", 1),
+                createMap("id", 103, "title", "Chemistry", "student_id", 2)
+        ));
+        
+        List<Map<String, Object>> documents = transformer.transformToDocuments(
+                studentTable, relatedData.get("students"), relatedData, tablesMetadata
+        );
+        
+        assertEquals(2, documents.size());
+        
+        Map<String, Object> aliceDoc = documents.get(0);
+        assertEquals("Alice", aliceDoc.get("name"));
+        assertNotNull(aliceDoc.get("courses_ids"));
+        List<?> aliceCourses = (List<?>) aliceDoc.get("courses_ids");
+        assertTrue(aliceCourses.contains(101) || aliceCourses.contains("101"));
+    }
+
+    @Test
+    void testFlattenToRelationalComplexManyToMany() {
+        List<Map<String, Object>> docs = new ArrayList<>();
+        
+        Map<String, Object> doc1 = new HashMap<>();
+        doc1.put("_id", 1);
+        doc1.put("name", "Student1");
+        doc1.put("course_ids", Arrays.asList(101, 102));
+        docs.add(doc1);
+        
+        Map<String, Object> doc2 = new HashMap<>();
+        doc2.put("_id", 2);
+        doc2.put("name", "Student2");
+        doc2.put("course_ids", Arrays.asList(102, 103));
+        docs.add(doc2);
+        
+        Map<String, TableMetadata> metaMap = new HashMap<>();
+        Map<String, List<Map<String, Object>>> relational = transformer.flattenToRelational("students", docs, metaMap);
+        
+        String junctionTableName = "students_course_junction";
+        assertTrue(relational.containsKey(junctionTableName));
+        
+        List<Map<String, Object>> junctionRows = relational.get(junctionTableName);
+        assertEquals(4, junctionRows.size());
+    }
+
+    private TableMetadata createStudentTableWithM2M() {
+        TableMetadata table = new TableMetadata("students", "public");
+        table.setPrimaryKeyColumn("id");
+        
+        ColumnMetadata idCol = new ColumnMetadata();
+        idCol.setColumnName("id");
+        idCol.setDataType("INT");
+        idCol.setPrimaryKey(true);
+        table.addColumn(idCol);
+        
+        ColumnMetadata nameCol = new ColumnMetadata();
+        nameCol.setColumnName("name");
+        nameCol.setDataType("VARCHAR");
+        table.addColumn(nameCol);
+        
+        ForeignKeyMetadata fk = new ForeignKeyMetadata();
+        fk.setColumnName("courses");
+        fk.setReferencedTable("courses");
+        fk.setRelationshipType(ForeignKeyMetadata.RelationshipType.MANY_TO_MANY);
+        table.addForeignKey(fk);
+        
+        return table;
+    }
+
+    private TableMetadata createCourseTableWithM2M() {
+        TableMetadata table = new TableMetadata("courses", "public");
+        table.setPrimaryKeyColumn("id");
+        
+        ColumnMetadata idCol = new ColumnMetadata();
+        idCol.setColumnName("id");
+        idCol.setDataType("INT");
+        idCol.setPrimaryKey(true);
+        table.addColumn(idCol);
+        
+        ColumnMetadata titleCol = new ColumnMetadata();
+        titleCol.setColumnName("title");
+        titleCol.setDataType("VARCHAR");
+        table.addColumn(titleCol);
+        
+        ForeignKeyMetadata fk = new ForeignKeyMetadata();
+        fk.setColumnName("student_id");
+        fk.setReferencedTable("students");
+        fk.setRelationshipType(ForeignKeyMetadata.RelationshipType.MANY_TO_MANY);
+        table.addForeignKey(fk);
+        
+        return table;
+    }
+
     private TableMetadata createCustomerTable() {
         TableMetadata table = new TableMetadata("klient", "public");
         table.setPrimaryKeyColumn("id");

@@ -9,7 +9,14 @@ import org.slf4j.LoggerFactory;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
 
 public class UniversalTransformer implements IDataTransformer {
     private static final Logger logger = LoggerFactory.getLogger(UniversalTransformer.class);
@@ -26,6 +33,8 @@ public class UniversalTransformer implements IDataTransformer {
         Map<String, Map<Object, List<Map<String, Object>>>> childIndexes = buildChildIndexes(relatedData, tablesMetadata, parentTable.getTableName());
 
         Map<String, Map<String, Object>> referenceIndexes = buildReferenceIndexes(relatedData, tablesMetadata);
+        
+        Map<String, Map<Object, Set<Object>>> manyToManyIndexes = buildManyToManyIndexes(relatedData, tablesMetadata, parentTable.getTableName());
 
         for (Map<String, Object> parentRecord : parentRecords) {
             Map<String, Object> document = new HashMap<>(parentRecord);
@@ -34,15 +43,20 @@ public class UniversalTransformer implements IDataTransformer {
             if (foreignKeys != null) {
                 for (ForeignKeyMetadata fk : foreignKeys) {
                     String referencedTable = fk.getReferencedTable();
-                    Map<String, Object> refIndex = referenceIndexes.get(referencedTable);
-                    if (refIndex != null) {
-                        Object fkValue = document.get(fk.getColumnName());
-                        if (fkValue != null) {
-                            Object referencedRecord = refIndex.get(fkValue.toString());
-                            if (referencedRecord instanceof Map) {
-                                @SuppressWarnings("unchecked")
-                                Map<String, Object> refRecordMap = (Map<String, Object>) referencedRecord;
-                                document.put(referencedTable + "_data", new HashMap<>(refRecordMap));
+                    
+                    if (fk.getRelationshipType() == ForeignKeyMetadata.RelationshipType.MANY_TO_MANY) {
+                        handleManyToManyReference(document, parentTable, parentRecord, referencedTable, tablesMetadata, manyToManyIndexes);
+                    } else {
+                        Map<String, Object> refIndex = referenceIndexes.get(referencedTable);
+                        if (refIndex != null) {
+                            Object fkValue = document.get(fk.getColumnName());
+                            if (fkValue != null) {
+                                Object referencedRecord = refIndex.get(fkValue.toString());
+                                if (referencedRecord instanceof Map) {
+                                    @SuppressWarnings("unchecked")
+                                    Map<String, Object> refRecordMap = (Map<String, Object>) referencedRecord;
+                                    document.put(referencedTable + "_data", new HashMap<>(refRecordMap));
+                                }
                             }
                         }
                     }
@@ -53,6 +67,12 @@ public class UniversalTransformer implements IDataTransformer {
             if (pkColumn != null) {
                 for (Map.Entry<String, Map<Object, List<Map<String, Object>>>> childEntry : childIndexes.entrySet()) {
                     String childTable = childEntry.getKey();
+                    
+                    TableMetadata childMeta = tablesMetadata.get(childTable);
+                    if (childMeta != null && isManyToManyRelationship(childMeta, parentTable.getTableName())) {
+                        continue;
+                    }
+                    
                     Map<Object, List<Map<String, Object>>> childIndex = childEntry.getValue();
                     Object parentId = parentRecord.get(pkColumn);
                     if (parentId != null && childIndex.containsKey(parentId)) {
@@ -69,6 +89,95 @@ public class UniversalTransformer implements IDataTransformer {
         logger.info("Transformed {} records from table {} to documents",
                     documents.size(), parentTable.getTableName());
         return documents;
+    }
+    
+    private void handleManyToManyReference(
+            Map<String, Object> document,
+            TableMetadata parentTable,
+            Map<String, Object> parentRecord,
+            String referencedTableName,
+            Map<String, TableMetadata> tablesMetadata,
+            Map<String, Map<Object, Set<Object>>> manyToManyIndexes) {
+        
+        String pkColumn = parentTable.getPrimaryKeyColumn();
+        if (pkColumn == null) return;
+        
+        Object parentId = parentRecord.get(pkColumn);
+        if (parentId == null) return;
+        
+        Map<Object, Set<Object>> m2mIndex = manyToManyIndexes.get(referencedTableName);
+        if (m2mIndex == null) return;
+        
+        Set<Object> relatedIds = m2mIndex.get(parentId);
+        if (relatedIds == null || relatedIds.isEmpty()) {
+            document.put(referencedTableName + "_ids", new ArrayList<>());
+            return;
+        }
+        
+        document.put(referencedTableName + "_ids", new ArrayList<>(relatedIds));
+    }
+    
+    private Map<String, Map<Object, Set<Object>>> buildManyToManyIndexes(
+            Map<String, List<Map<String, Object>>> relatedData,
+            Map<String, TableMetadata> tablesMetadata,
+            String parentTableName) {
+        
+        Map<String, Map<Object, Set<Object>>> indexes = new HashMap<>();
+        
+        for (Map.Entry<String, TableMetadata> entry : tablesMetadata.entrySet()) {
+            String tableName = entry.getKey();
+            TableMetadata table = entry.getValue();
+            
+            if (tableName.equals(parentTableName)) continue;
+            
+            if (!isManyToManyRelationship(table, parentTableName)) continue;
+            
+            List<Map<String, Object>> records = relatedData.get(tableName);
+            if (records == null || records.isEmpty()) continue;
+            
+            String fkColumn = findForeignKeyColumnTo(table, parentTableName);
+            if (fkColumn == null) continue;
+            
+            String pkColumn = table.getPrimaryKeyColumn();
+            if (pkColumn == null) continue;
+            
+            Map<Object, Set<Object>> index = new HashMap<>();
+            for (Map<String, Object> record : records) {
+                Object fkValue = record.get(fkColumn);
+                Object pkValue = record.get(pkColumn);
+                if (fkValue != null && pkValue != null) {
+                    index.computeIfAbsent(fkValue, k -> new HashSet<>()).add(pkValue);
+                }
+            }
+            indexes.put(tableName, index);
+        }
+        
+        return indexes;
+    }
+    
+    private boolean isManyToManyRelationship(TableMetadata table, String targetTableName) {
+        List<ForeignKeyMetadata> fks = table.getForeignKeys();
+        if (fks == null) return false;
+        
+        for (ForeignKeyMetadata fk : fks) {
+            if (fk.getReferencedTable().equalsIgnoreCase(targetTableName) 
+                    && fk.getRelationshipType() == ForeignKeyMetadata.RelationshipType.MANY_TO_MANY) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    private String findForeignKeyColumnTo(TableMetadata table, String targetTableName) {
+        List<ForeignKeyMetadata> fks = table.getForeignKeys();
+        if (fks == null) return null;
+        
+        for (ForeignKeyMetadata fk : fks) {
+            if (fk.getReferencedTable().equalsIgnoreCase(targetTableName)) {
+                return fk.getColumnName();
+            }
+        }
+        return null;
     }
 
     private Map<String, Map<Object, List<Map<String, Object>>>> buildChildIndexes(
@@ -251,8 +360,12 @@ public class UniversalTransformer implements IDataTransformer {
                 Object value = entry.getValue();
 
                 if (key.equals("_id") || key.equals("id")) continue;
-
-                if (value instanceof List) {
+                
+                if (key.endsWith("_ids") && value instanceof List) {
+                    String refTableName = key.substring(0, key.length() - 4);
+                    handleManyToManyJunction(relationalData, tablesMetadata, parentTableName, parentMeta, 
+                            parentId, refTableName, (List<?>) value);
+                } else if (value instanceof List) {
                     String childTableName = key;
                     if (!tablesMetadata.containsKey(childTableName)) {
                         TableMetadata childMeta = new TableMetadata(childTableName, "public");
@@ -437,6 +550,72 @@ public class UniversalTransformer implements IDataTransformer {
         if (!exists) {
             meta.addColumn(newCol);
         }
+    }
+    
+    private void handleManyToManyJunction(
+            Map<String, List<Map<String, Object>>> relationalData,
+            Map<String, TableMetadata> tablesMetadata,
+            String parentTableName,
+            TableMetadata parentMeta,
+            Object parentId,
+            String refTableName,
+            List<?> relatedIds) {
+        
+        String junctionTableName = parentTableName + "_" + refTableName + "_junction";
+        
+        if (!tablesMetadata.containsKey(junctionTableName)) {
+            TableMetadata junctionMeta = new TableMetadata(junctionTableName, "public");
+            junctionMeta.setPrimaryKeyColumn("id");
+            
+            ForeignKeyMetadata fk1 = new ForeignKeyMetadata();
+            fk1.setColumnName(parentTableName + "_id");
+            fk1.setReferencedTable(parentTableName);
+            fk1.setReferencedColumn("id");
+            junctionMeta.addForeignKey(fk1);
+            
+            ForeignKeyMetadata fk2 = new ForeignKeyMetadata();
+            fk2.setColumnName(refTableName + "_id");
+            fk2.setReferencedTable(refTableName);
+            fk2.setReferencedColumn("id");
+            junctionMeta.addForeignKey(fk2);
+            
+            tablesMetadata.put(junctionTableName, junctionMeta);
+        }
+        
+        relationalData.putIfAbsent(junctionTableName, new ArrayList<>());
+        
+        for (Object relatedId : relatedIds) {
+            Map<String, Object> junctionRecord = new HashMap<>();
+            junctionRecord.put("id", UUID.randomUUID().toString());
+            
+            Object parentIdValue = parentId;
+            if (parentId instanceof Number && !(parentId instanceof Float) && !(parentId instanceof Double)) {
+                parentIdValue = parentId;
+            } else if (parentId instanceof String) {
+                try {
+                    parentIdValue = Integer.parseInt((String) parentId);
+                } catch (NumberFormatException e) {
+                }
+            }
+            junctionRecord.put(parentTableName + "_id", parentIdValue);
+            
+            Object refIdValue = relatedId;
+            if (relatedId instanceof Number && !(relatedId instanceof Float) && !(relatedId instanceof Double)) {
+                refIdValue = relatedId;
+            } else if (relatedId instanceof String) {
+                try {
+                    refIdValue = Integer.parseInt((String) relatedId);
+                } catch (NumberFormatException e) {
+                }
+            }
+            junctionRecord.put(refTableName + "_id", refIdValue);
+            
+            relationalData.get(junctionTableName).add(junctionRecord);
+            
+            inferColumns(tablesMetadata.get(junctionTableName), junctionRecord);
+        }
+        
+        logger.info("Created junction table '{}' with {} records", junctionTableName, relatedIds.size());
     }
 
     String inferSqlTypeForTest(Object value) {

@@ -39,7 +39,18 @@ public class DataExtractor {
                 Map<String, Object> record = new HashMap<>();
                 for (ColumnMetadata column : table.getColumns()) {
                     try {
-                        record.put(column.getColumnName(), rs.getObject(column.getColumnName()));
+                        Object value = rs.getObject(column.getColumnName());
+                        if (value != null) {
+                            String dataType = column.getDataType();
+                            if (dataType != null && (dataType.equals("JSON") || dataType.equals("JSONB"))) {
+                                value = value.toString();
+                            } else if (value.getClass().getName().contains("PGobject")) {
+                                value = value.toString();
+                            } else if (value.getClass().getName().contains("PgArray") || (dataType != null && dataType.startsWith("_"))) {
+                                value = value.toString();
+                            }
+                        }
+                        record.put(column.getColumnName(), value);
                     } catch (SQLException e) {
                         logger.error("Error extracting column '{}' from table {}: {}", 
                             column.getColumnName(), table.getTableName(), e.getMessage());

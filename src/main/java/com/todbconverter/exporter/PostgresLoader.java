@@ -53,8 +53,16 @@ public class PostgresLoader {
                 sql.append("VARCHAR(").append(columnSize).append(")");
             } else if ("DECIMAL".equalsIgnoreCase(dataType)) {
                 sql.append("DECIMAL(10, 2)");
+            } else if (dataType != null && dataType.startsWith("_")) {
+                sql.append("TEXT");
+            } else if (dataType != null && (dataType.equalsIgnoreCase("BYTEA") || dataType.equalsIgnoreCase("BLOB"))) {
+                sql.append("BYTEA");
+            } else if (dataType != null && (dataType.equalsIgnoreCase("JSON") || dataType.equalsIgnoreCase("JSONB"))) {
+                sql.append("TEXT");
+            } else if (dataType != null && dataType.toUpperCase().contains("INT")) {
+                sql.append("INTEGER");
             } else {
-                sql.append(dataType);
+                sql.append(dataType != null ? dataType : "VARCHAR(255)");
             }
 
             if (col.isPrimaryKey()) {

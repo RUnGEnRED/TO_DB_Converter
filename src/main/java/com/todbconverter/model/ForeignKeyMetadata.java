@@ -1,10 +1,17 @@
 package com.todbconverter.model;
 
 public class ForeignKeyMetadata {
+    public enum RelationshipType {
+        ONE_TO_ONE,
+        ONE_TO_MANY,
+        MANY_TO_MANY
+    }
+
     private String foreignKeyName;
     private String columnName;
     private String referencedTable;
     private String referencedColumn;
+    private RelationshipType relationshipType;
 
     public ForeignKeyMetadata() {
     }
@@ -39,6 +46,14 @@ public class ForeignKeyMetadata {
 
     public void setReferencedColumn(String referencedColumn) {
         this.referencedColumn = referencedColumn;
+    }
+
+    public RelationshipType getRelationshipType() {
+        return relationshipType;
+    }
+
+    public void setRelationshipType(RelationshipType relationshipType) {
+        this.relationshipType = relationshipType;
     }
 
     @Override

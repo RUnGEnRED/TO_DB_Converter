@@ -9,6 +9,7 @@ public class TableMetadata {
     private List<ColumnMetadata> columns;
     private List<ForeignKeyMetadata> foreignKeys;
     private String primaryKeyColumn;
+    private List<String> primaryKeyColumns;
 
     public TableMetadata() {
         this.columns = new ArrayList<>();
@@ -72,6 +73,28 @@ public class TableMetadata {
 
     public void setPrimaryKeyColumn(String primaryKeyColumn) {
         this.primaryKeyColumn = primaryKeyColumn;
+    }
+
+    public List<String> getPrimaryKeyColumns() {
+        return primaryKeyColumns;
+    }
+
+    public void setPrimaryKeyColumns(List<String> primaryKeyColumns) {
+        this.primaryKeyColumns = primaryKeyColumns;
+    }
+
+    public void addPrimaryKeyColumn(String pkColumn) {
+        if (this.primaryKeyColumns == null) {
+            this.primaryKeyColumns = new ArrayList<>();
+        }
+        this.primaryKeyColumns.add(pkColumn);
+    }
+
+    public String[] getPrimaryKeyColumnArray() {
+        if (primaryKeyColumns == null || primaryKeyColumns.isEmpty()) {
+            return primaryKeyColumn != null ? new String[]{primaryKeyColumn} : new String[0];
+        }
+        return primaryKeyColumns.toArray(new String[0]);
     }
 
     @Override
