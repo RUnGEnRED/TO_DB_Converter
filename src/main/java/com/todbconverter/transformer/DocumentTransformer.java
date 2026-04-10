@@ -7,6 +7,12 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 
+/**
+ * @deprecated Use {@link UniversalTransformer} instead, which provides bidirectional
+ *             transformation with O(n) indexed lookups and support for both 1:N and N:1 relationships.
+ *             This class is kept for reference only and is no longer used in the conversion pipeline.
+ */
+@Deprecated
 public class DocumentTransformer implements IDataTransformer {
     private static final Logger logger = LoggerFactory.getLogger(DocumentTransformer.class);
 

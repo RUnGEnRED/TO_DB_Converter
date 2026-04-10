@@ -22,7 +22,9 @@ public class MongoExtractor {
     public List<String> listCollections() {
         List<String> collections = new ArrayList<>();
         for (String name : database.listCollectionNames()) {
-            collections.add(name);
+            if (!name.startsWith("system.")) {
+                collections.add(name);
+            }
         }
         return collections;
     }
@@ -33,11 +35,11 @@ public class MongoExtractor {
         for (Document doc : collection.find()) {
             Map<String, Object> record = new HashMap<>();
             for (Map.Entry<String, Object> entry : doc.entrySet()) {
-                // Convert ObjectId to String
-                if (entry.getKey().equals("_id")) {
-                    record.put(entry.getKey(), entry.getValue().toString());
+                Object value = entry.getValue();
+                if (entry.getKey().equals("_id") && value != null) {
+                    record.put(entry.getKey(), value.toString());
                 } else {
-                    record.put(entry.getKey(), entry.getValue());
+                    record.put(entry.getKey(), value);
                 }
             }
             data.add(record);

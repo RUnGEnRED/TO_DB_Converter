@@ -14,27 +14,55 @@ import java.util.List;
 import java.util.Map;
 
 public class PostgresLoader {
+    public static final int DEFAULT_VARCHAR_SIZE = 255;
     private static final Logger logger = LoggerFactory.getLogger(PostgresLoader.class);
     private final Connection connection;
+    private final boolean dropExistingTables;
 
     public PostgresLoader(Connection connection) {
+        this(connection, true);
+    }
+
+    public PostgresLoader(Connection connection, boolean dropExistingTables) {
         this.connection = connection;
+        this.dropExistingTables = dropExistingTables;
+    }
+
+    private String escapeIdentifier(String identifier) {
+        if (identifier == null || identifier.isEmpty()) {
+            throw new IllegalArgumentException("Identifier cannot be null or empty");
+        }
+        return "\"" + identifier.replace("\"", "\"\"") + "\"";
     }
 
     public void createTable(TableMetadata table) throws SQLException {
-        StringBuilder sql = new StringBuilder("CREATE TABLE IF NOT EXISTS ");
-        sql.append(table.getSchema()).append(".").append(table.getTableName()).append(" (\n");
+        String schema = table.getSchema();
+        String tableName = table.getTableName();
+        
+        StringBuilder sql = new StringBuilder("CREATE TABLE ");
+        sql.append(escapeIdentifier(schema)).append(".").append(escapeIdentifier(tableName)).append(" (\n");
 
         List<ColumnMetadata> columns = table.getColumns();
         for (int i = 0; i < columns.size(); i++) {
             ColumnMetadata col = columns.get(i);
-            sql.append("    ").append(col.getColumnName()).append(" ");
+            sql.append("    ").append(escapeIdentifier(col.getColumnName())).append(" ");
 
             String dataType = col.getDataType();
+            int columnSize = col.getColumnSize() > 0 ? col.getColumnSize() : DEFAULT_VARCHAR_SIZE;
             if ("VARCHAR".equalsIgnoreCase(dataType)) {
-                sql.append("VARCHAR(").append(col.getColumnSize() > 0 ? col.getColumnSize() : 255).append(")");
+                sql.append("VARCHAR(").append(columnSize).append(")");
+            } else if ("DECIMAL".equalsIgnoreCase(dataType)) {
+                sql.append("DECIMAL(10, 2)");
+            } else if (dataType != null && dataType.startsWith("_")) {
+                sql.append("TEXT");
+            } else if (dataType != null && (dataType.equalsIgnoreCase("BYTEA") || dataType.equalsIgnoreCase("BLOB"))) {
+                sql.append("BYTEA");
+            } else if (dataType != null && (dataType.equalsIgnoreCase("JSON") || dataType.equalsIgnoreCase("JSONB"))) {
+                sql.append("TEXT");
+            } else if (dataType != null && dataType.toUpperCase().contains("INT")) {
+                sql.append("INTEGER");
             } else {
-                sql.append(dataType);
+                sql.append(dataType != null ? dataType : "VARCHAR(255)");
             }
 
             if (col.isPrimaryKey()) {
@@ -45,31 +73,38 @@ public class PostgresLoader {
                 sql.append(",\n");
             }
         }
-        sql.append("\n);");
+        sql.append("\n)");
 
-        logger.info("Creating table {}: {}", table.getTableName(), sql);
+        logger.info("Creating table {}: {}", tableName, sql);
 
         try (Statement stmt = connection.createStatement()) {
-            String dropSql = "DROP TABLE IF EXISTS " + table.getSchema() + "." + table.getTableName() + " CASCADE";
-            logger.info("Dropping table if exists: {}", dropSql);
-            stmt.execute(dropSql);
+            if (dropExistingTables) {
+                String dropSql = "DROP TABLE IF EXISTS " + escapeIdentifier(schema) + "." + escapeIdentifier(tableName) + " CASCADE";
+                logger.info("Dropping table if exists: {}", dropSql);
+                stmt.execute(dropSql);
+            }
             stmt.execute(sql.toString());
         }
     }
 
     public void addForeignKeys(TableMetadata table) throws SQLException {
+        String schema = table.getSchema();
+        String tableName = table.getTableName();
+        
         for (ForeignKeyMetadata fk : table.getForeignKeys()) {
             String sql = String.format("ALTER TABLE %s.%s ADD CONSTRAINT fk_%s_%s FOREIGN KEY (%s) REFERENCES %s.%s(%s);",
-                    table.getSchema(), table.getTableName(),
-                    table.getTableName(), fk.getColumnName(),
-                    fk.getColumnName(),
-                    table.getSchema(), fk.getReferencedTable(), fk.getReferencedColumn());
+                    escapeIdentifier(schema), escapeIdentifier(tableName),
+                    tableName, fk.getColumnName(),
+                    escapeIdentifier(fk.getColumnName()),
+                    escapeIdentifier(schema), escapeIdentifier(fk.getReferencedTable()), escapeIdentifier(fk.getReferencedColumn()));
             
             logger.info("Adding foreign key: {}", sql);
             try (Statement stmt = connection.createStatement()) {
                 stmt.execute(sql);
             } catch (SQLException e) {
-                logger.warn("Could not add foreign key (may already exist): {}", e.getMessage());
+                logger.error("Failed to add foreign key for column {} in table {}: {}", 
+                    fk.getColumnName(), tableName, e.getMessage());
+                throw new SQLException("Failed to add foreign key constraint", e);
             }
         }
     }
@@ -82,12 +117,15 @@ public class PostgresLoader {
         }
 
         List<ColumnMetadata> columns = table.getColumns();
+        String schema = table.getSchema();
+        String tableName = table.getTableName();
+        
         StringBuilder sql = new StringBuilder("INSERT INTO ");
-        sql.append(table.getSchema()).append(".").append(table.getTableName()).append(" (");
+        sql.append(escapeIdentifier(schema)).append(".").append(escapeIdentifier(tableName)).append(" (");
 
         StringBuilder placeholders = new StringBuilder();
         for (int i = 0; i < columns.size(); i++) {
-            sql.append(columns.get(i).getColumnName());
+            sql.append(escapeIdentifier(columns.get(i).getColumnName()));
             placeholders.append("?");
             if (i < columns.size() - 1) {
                 sql.append(", ");
@@ -100,7 +138,7 @@ public class PostgresLoader {
             for (Map<String, Object> row : data) {
                 for (int i = 0; i < columns.size(); i++) {
                     Object value = row.get(columns.get(i).getColumnName());
-                    if (value instanceof java.util.Date) {
+                    if (value instanceof java.util.Date && !(value instanceof java.sql.Date)) {
                         stmt.setTimestamp(i + 1, new java.sql.Timestamp(((java.util.Date) value).getTime()));
                     } else {
                         stmt.setObject(i + 1, value);
@@ -110,6 +148,44 @@ public class PostgresLoader {
             }
             stmt.executeBatch();
             logger.info("Inserted {} records into {}", data.size(), table.getTableName());
+        }
+    }
+
+    public void loadAllTables(Map<String, TableMetadata> tablesMetadata,
+                              Map<String, List<Map<String, Object>>> allRelationalData) throws SQLException {
+        boolean autoCommit = connection.getAutoCommit();
+        try {
+            connection.setAutoCommit(false);
+
+            for (TableMetadata meta : tablesMetadata.values()) {
+                createTable(meta);
+            }
+
+            for (Map.Entry<String, List<Map<String, Object>>> entry : allRelationalData.entrySet()) {
+                TableMetadata meta = tablesMetadata.get(entry.getKey());
+                if (meta == null) {
+                    logger.warn("Skipping data load for {}: No table metadata found", entry.getKey());
+                    continue;
+                }
+                loadData(meta, entry.getValue());
+            }
+
+            for (TableMetadata meta : tablesMetadata.values()) {
+                addForeignKeys(meta);
+            }
+
+            connection.commit();
+            logger.info("Transaction committed successfully");
+        } catch (SQLException e) {
+            try {
+                connection.rollback();
+                logger.error("Transaction rolled back due to error: {}", e.getMessage());
+            } catch (SQLException rollbackEx) {
+                logger.error("Failed to rollback transaction: {}", rollbackEx.getMessage());
+            }
+            throw e;
+        } finally {
+            connection.setAutoCommit(autoCommit);
         }
     }
 }

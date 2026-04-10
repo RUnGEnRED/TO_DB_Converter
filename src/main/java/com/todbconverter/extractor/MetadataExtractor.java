@@ -34,6 +34,8 @@ public class MetadataExtractor implements IMetadataExtractor {
             }
         }
 
+        detectManyToManyRelationships(tables);
+
         logger.info("Extracted {} tables from schema {}", tables.size(), schema);
         return tables;
     }
@@ -54,8 +56,11 @@ public class MetadataExtractor implements IMetadataExtractor {
 
         try (ResultSet rs = metaData.getColumns(null, schema, table.getTableName(), "%")) {
             while (rs.next()) {
+                String colName = rs.getString("COLUMN_NAME");
+                if (colName == null || colName.isEmpty()) continue;
+                
                 ColumnMetadata column = new ColumnMetadata();
-                column.setColumnName(rs.getString("COLUMN_NAME"));
+                column.setColumnName(colName);
                 column.setDataType(rs.getString("TYPE_NAME"));
                 column.setColumnSize(rs.getInt("COLUMN_SIZE"));
                 column.setNullable(rs.getInt("NULLABLE") == DatabaseMetaData.columnNullable);
@@ -69,17 +74,28 @@ public class MetadataExtractor implements IMetadataExtractor {
         DatabaseMetaData metaData = connection.getMetaData();
 
         try (ResultSet rs = metaData.getPrimaryKeys(null, schema, table.getTableName())) {
-            if (rs.next()) {
+            while (rs.next()) {
                 String pkColumn = rs.getString("COLUMN_NAME");
-                table.setPrimaryKeyColumn(pkColumn);
+                if (pkColumn == null || pkColumn.isEmpty()) continue;
+                
+                if (table.getPrimaryKeyColumn() == null) {
+                    table.setPrimaryKeyColumn(pkColumn);
+                }
+                table.addPrimaryKeyColumn(pkColumn);
 
                 for (ColumnMetadata column : table.getColumns()) {
-                    if (column.getColumnName().equals(pkColumn)) {
+                    if (column.getColumnName() != null && column.getColumnName().equalsIgnoreCase(pkColumn)) {
                         column.setPrimaryKey(true);
-                        break;
                     }
                 }
             }
+        }
+        
+        if (table.getPrimaryKeyColumn() == null && !table.getColumns().isEmpty()) {
+            String firstColumn = table.getColumns().get(0).getColumnName();
+            table.setPrimaryKeyColumn(firstColumn);
+            table.addPrimaryKeyColumn(firstColumn);
+            table.getColumns().get(0).setPrimaryKey(true);
         }
     }
 
@@ -88,21 +104,62 @@ public class MetadataExtractor implements IMetadataExtractor {
 
         try (ResultSet rs = metaData.getImportedKeys(null, schema, table.getTableName())) {
             while (rs.next()) {
+                String fkColName = rs.getString("FKCOLUMN_NAME");
+                if (fkColName == null || fkColName.isEmpty()) continue;
+                
                 ForeignKeyMetadata fk = new ForeignKeyMetadata();
                 fk.setForeignKeyName(rs.getString("FK_NAME"));
-                fk.setColumnName(rs.getString("FKCOLUMN_NAME"));
+                fk.setColumnName(fkColName);
                 fk.setReferencedTable(rs.getString("PKTABLE_NAME"));
                 fk.setReferencedColumn(rs.getString("PKCOLUMN_NAME"));
+                fk.setRelationshipType(ForeignKeyMetadata.RelationshipType.ONE_TO_MANY);
 
                 table.addForeignKey(fk);
 
                 for (ColumnMetadata column : table.getColumns()) {
-                    if (column.getColumnName().equals(fk.getColumnName())) {
+                    if (column.getColumnName() != null && column.getColumnName().equalsIgnoreCase(fkColName)) {
                         column.setForeignKey(true);
-                        break;
                     }
                 }
             }
         }
+    }
+
+    public void detectManyToManyRelationships(List<TableMetadata> tables) {
+        logger.info("Detecting many-to-many relationships between tables");
+
+        for (TableMetadata table : tables) {
+            for (ForeignKeyMetadata fk : table.getForeignKeys()) {
+                String referencedTableName = fk.getReferencedTable();
+                TableMetadata referencedTable = findTableByName(tables, referencedTableName);
+
+                if (referencedTable != null && hasForeignKeyTo(referencedTable, table.getTableName())) {
+                    fk.setRelationshipType(ForeignKeyMetadata.RelationshipType.MANY_TO_MANY);
+                    logger.info("Detected many-to-many relationship: {} <-> {}",
+                            table.getTableName(), referencedTableName);
+                }
+            }
+        }
+    }
+
+    private TableMetadata findTableByName(List<TableMetadata> tables, String tableName) {
+        for (TableMetadata table : tables) {
+            if (table.getTableName().equalsIgnoreCase(tableName)) {
+                return table;
+            }
+        }
+        return null;
+    }
+
+    private boolean hasForeignKeyTo(TableMetadata table, String targetTableName) {
+        if (table.getForeignKeys() == null) {
+            return false;
+        }
+        for (ForeignKeyMetadata fk : table.getForeignKeys()) {
+            if (fk.getReferencedTable().equalsIgnoreCase(targetTableName)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
