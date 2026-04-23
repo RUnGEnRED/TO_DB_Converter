@@ -218,4 +218,319 @@ Wymagania niefunkcjonalne definiują ograniczenia techniczne i jakościowe syste
 
 ---
 
+
+# 3. Architektura Systemu
+
+## 3.1. Przegląd architektury
+
+TO DB Converter wykorzystuje architekturę **Pipe-and-Filter** umożliwiającą sekwencyjne przetwarzanie danych: ekstrakcja → transformacja → eksport.
+
+```
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│ PostgreSQL │───▶│ Transformer│───▶│  MongoDB   │
+│  (źródło)│    │  (proces)  │    │   (cel)   │
+└──────────────┘    └──────────────┘    └──────────────┘
+```
+
+Obsługiwane kierunki konwersji:
+- **PostgreSQL → MongoDB**: Tabela relacyjna → dokumenty JSON
+- **MongoDB → PostgreSQL**: Dokumenty JSON → tabela relacyjna
+
+## 3.2. Komponenty systemu
+
+### 3.2.1. Moduł połączeń (connection)
+
+| Klasa/Interfejs | Opis |
+|---------------|-----|
+| `IDatabaseConnector` | Interfejs bazowy dla połączeń |
+| `IPostgreSQLConnector` | Interfejs dla PostgreSQL |
+| `IMongoDBConnector` | Interfejs dla MongoDB |
+| `PostgreSQLConnection` | Implementacja połączenia PostgreSQL |
+| `MongoDBConnection` | Implementacja połączenia MongoDB |
+
+### 3.2.2. Moduł ekstrakcji (extractor)
+
+| Klasa/Interfejs | Opis |
+|---------------|-----|
+| `IMetadataExtractor` | Interfejs ekstraktora metadanych |
+| `MetadataExtractor` | Ekstrakcja schematu tabel z PostgreSQL |
+| `DataExtractor` | Ekstrakcja danych z tabel |
+| `MongoExtractor` | Ekstrakcja dokumentów z MongoDB |
+
+### 3.2.3. Moduł transformacji (transformer)
+
+| Klasa/Interfejs | Opis |
+|---------------|-----|
+| `IDataTransformer` | Interfejs transformatora |
+| `UniversalTransformer` | Uniwersalna transformacja |
+| `DocumentTransformer` | Transformacja dokumentów |
+
+### 3.2.4. Moduł eksportu (exporter)
+
+| Klasa/Interfejs | Opis |
+|---------------|-----|
+| `IDocumentLoader` | Interfejs loader |
+| `PostgresLoader` | Ładowanie do PostgreSQL |
+| `MongoDBExporter` | Eksport do MongoDB |
+
+### 3.2.5. Moduł konfiguracji (config)
+
+| Klasa | Opis |
+|-------|-----|
+| `DatabaseConfig` | Odczyt parametrów z pliku properties |
+
+### 3.2.6. Moduł modeli (model)
+
+| Klasa | Opis |
+|-------|-----|
+| `TableMetadata` | Metadane tabeli |
+| `ColumnMetadata` | Metadane kolumny |
+| `ForeignKeyMetadata` | Metadane klucza obcego |
+
+## 3.3. Przepływ danych
+
+### 3.3.1. Konwersja PostgreSQL → MongoDB
+
+```
+1. Nawiązanie połączenia PostgreSQL
+2. Ekstrakcja metadanych tabel
+3. Ekstrakcja danych
+4. Transformacja do dokumentów
+5. Nawiązanie połączenia MongoDB
+6. Eksport dokumentów
+7. Zamknięcie połączeń
+```
+
+### 3.3.2. Konwersja MongoDB → PostgreSQL
+
+```
+1. Nawiązanie połączenia MongoDB
+2. Lista kolekcji
+3. Ekstrakcja dokumentów
+4. Transformacja do struktury relacyjnej
+5. Wnioskowanie schematu
+6. Nawiązanie połączenia PostgreSQL
+7. Tworzenie tabel i ładowanie danych
+8. Zamknięcie połączeń
+```
+
+---
+
+# 4. Projekt Implementacyjny
+
+## 4.1. Struktura projektu
+
+### 4.1.1. Struktura katalogów
+
+```
+TO_DB_Converter/
+├── src/
+│   ├── main/
+│   │   ├── java/com/todbconverter/
+│   │   │   ├── config/DatabaseConfig.java
+│   │   │   ├── connection/
+│   │   │   │   ├── IDatabaseConnector.java
+│   │   │   │   ├── IPostgreSQLConnector.java
+│   │   │   │   ├── IMongoDBConnector.java
+│   │   │   │   ├── PostgreSQLConnection.java
+│   │   │   │   └── MongoDBConnection.java
+│   │   │   ├── converter/ConverterService.java
+│   │   │   ├── exception/ConnectionException.java
+│   │   │   ├── exporter/
+│   │   │   │   ├── IDocumentLoader.java
+│   │   │   │   ├── PostgresLoader.java
+│   │   │   │   └── MongoDBExporter.java
+│   │   │   ├── extractor/
+│   │   │   │   ├── IMetadataExtractor.java
+│   │   │   │   ├── MetadataExtractor.java
+│   │   │   │   ├── DataExtractor.java
+│   │   │   │   └── MongoExtractor.java
+│   │   │   ├── model/
+│   │   │   │   ├── TableMetadata.java
+│   │   │   │   ├── ColumnMetadata.java
+│   │   │   │   └── ForeignKeyMetadata.java
+│   │   │   ├── transformer/
+│   │   │   │   ├── IDataTransformer.java
+│   │   │   │   ├── UniversalTransformer.java
+│   │   │   │   └── DocumentTransformer.java
+│   │   │   └── Main.java
+│   │   └── resources/application.properties
+│   └── test/
+│       ├── java/com/todbconverter/transformer/UniversalTransformerTest.java
+│       └── resources/test.properties
+├── database/init-postgres.sql
+├── docs/DOKUMENTACJA.md
+├── pom.xml
+└── README.md
+```
+
+## 4.2. Klasy i interfejsy
+
+### 4.2.1. IDatabaseConnector
+
+```java
+public interface IDatabaseConnector {
+    void connect() throws Exception;
+    void disconnect();
+    boolean isConnected();
+}
+```
+
+### 4.2.2. IDataTransformer
+
+```java
+public interface IDataTransformer {
+    List<Map<String, Object>> transformToDocuments(
+        TableMetadata parentTable,
+        List<Map<String, Object>> parentRecords,
+        Map<String, List<Map<String, Object>>> relatedData,
+        Map<String, TableMetadata> tablesMetadata
+    );
+
+    Map<String, List<Map<String, Object>>> flattenToRelational(
+        String parentTableName,
+        List<Map<String, Object>> documents,
+        Map<String, TableMetadata> tablesMetadata
+    );
+}
+```
+
+### 4.2.3. TableMetadata
+
+```java
+public class TableMetadata {
+    private String tableName;
+    private String schema;
+    private String primaryKeyColumn;
+    private List<ColumnMetadata> columns;
+    private List<ForeignKeyMetadata> foreignKeys;
+
+    public TableMetadata(String tableName, String schema) { ... }
+    public void addColumn(ColumnMetadata column) { ... }
+    public void addForeignKey(ForeignKeyMetadata fk) { ... }
+}
+```
+
+### 4.2.4. ColumnMetadata
+
+```java
+public class ColumnMetadata {
+    private String columnName;
+    private String dataType;
+    private boolean isPrimaryKey;
+    private boolean isNullable;
+}
+```
+
+### 4.2.5. ForeignKeyMetadata
+
+```java
+public class ForeignKeyMetadata {
+    private String columnName;
+    private String referencedTable;
+    private String referencedColumn;
+    private RelationshipType relationshipType;
+
+    public enum RelationshipType {
+        ONE_TO_ONE, ONE_TO_MANY, MANY_TO_MANY
+    }
+}
+```
+
+## 4.3. Algorytmy transformacji
+
+### 4.3.1. PostgreSQL → MongoDB
+
+```
+1. Dla każdej tabeli:
+   a) Pobierz metadane (kolumny, klucz główny, klucze obce)
+   b) Pobierz wszystkie rekordy
+
+2. Dla każdego rekordu:
+   a) Kopiuj pola do dokumentu
+   b) Znajdź i osadź dane z tabel referencyjnych
+   c) Agreguj dane z tabel podrzędnych
+
+3. Zapisz do MongoDB
+```
+
+### 4.3.2. MongoDB → PostgreSQL
+
+```
+1. Dla każdego dokumentu:
+   a) Utwórz rekord głównej tabeli
+   b) Spłaszcz zagnieżdżone obiekty
+   c) Utwórz osobne tabele dla tablic (1:N)
+   d) Utwórz tabele junction (M:N)
+
+2. Wywnioskuj schemat i wstaw dane
+```
+
+### 4.3.3. Mapowanie typów
+
+| PostgreSQL | MongoDB |
+|-----------|---------|
+| INT | Int32 |
+| BIGINT | Int64 |
+| DOUBLE | Double |
+| VARCHAR | String |
+| BOOLEAN | Boolean |
+| TIMESTAMP | DateTime |
+
+**Mapowanie odwrotne:**
+
+| MongoDB | PostgreSQL |
+|---------|-----------|
+| Int32 | INT |
+| Int64 | BIGINT |
+| Double | DOUBLE PRECISION |
+| String | VARCHAR |
+| Boolean | BOOLEAN |
+| Date | TIMESTAMP |
+
+## 4.4. Obsługa błędów
+
+### 4.4.1. Zasady
+
+1. **Fail-fast** – błąd wykryty jak najszybciej
+2. **Graceful degradation** – zamknij połączenia po błędzie
+3. **Informowanie** – użytkownik musi znać przyczynę błędu
+
+### 4.4.2. Hierarchia wyjątków
+
+```
+RuntimeException
+├── ConnectionException
+├── TransformationException
+├── ExtractionException
+└── LoaderException
+```
+
+### 4.4.3. Przykład obsługi
+
+```java
+try {
+    service = new ConverterService(config);
+    service.convert();
+} catch (Exception e) {
+    logger.error("Conversion failed", e);
+    System.exit(1);
+} finally {
+    if (service != null) service.close();
+}
+```
+
+### 4.4.4. Kody błędów
+
+| Kod | Opis |
+|-----|-----|
+| 0 | Sukces |
+| 1 | Błąd ogólny |
+| 2 | Błąd PostgreSQL |
+| 3 | Błąd MongoDB |
+| 4 | Błąd transformacji |
+| 5 | Błąd konfiguracji |
+
+---
+
 *Przygotowano na potrzeby projektu TO DB Converter*
