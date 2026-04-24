@@ -157,6 +157,7 @@ public class ConverterService {
 
         // Phase 3: Data Loading in Batches
         logger.info("Phase 3: Loading data in batches...");
+        transformer.clearProcessedIds();
         for (String collectionName : collections) {
             mongoExtractor.extractDocumentsInBatches(collectionName, 1000, batch -> {
                 try {

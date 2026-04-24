@@ -22,6 +22,7 @@ import java.util.UUID;
 public class UniversalTransformer implements IDataTransformer {
     private static final Logger logger = LoggerFactory.getLogger(UniversalTransformer.class);
     private boolean useReferencingStrategy = false;
+    private final Map<String, Set<Object>> processedIds = new HashMap<>();
 
     public UniversalTransformer() {
     }
@@ -30,6 +31,10 @@ public class UniversalTransformer implements IDataTransformer {
         if (config != null) {
             this.useReferencingStrategy = config.useReferencingStrategy();
         }
+    }
+    
+    public void clearProcessedIds() {
+        processedIds.clear();
     }
 
     @Override
@@ -383,30 +388,22 @@ public class UniversalTransformer implements IDataTransformer {
             Map<String, Object> flatParent = new HashMap<>();
             
             Object parentId = doc.get("id");
-            if (parentId == null) {
-                parentId = doc.get("_id");
-            }
-            if (parentId == null) {
-                parentId = UUID.randomUUID().toString();
-            }
+            if (parentId == null) parentId = doc.get("_id");
+            if (parentId == null) parentId = UUID.randomUUID().toString();
             
-            Object typedParentId = parentId;
-            if (parentId instanceof Number && !(parentId instanceof Float) && !(parentId instanceof Double)) {
-                typedParentId = parentId;
-            } else if (parentId instanceof String) {
-                try {
-                    typedParentId = Integer.parseInt((String) parentId);
-                } catch (NumberFormatException e) {
-                }
+            // Normalize ID to String for consistent de-duplication
+            String idStr = parentId.toString();
+            boolean alreadyProcessed = processedIds.computeIfAbsent(parentTableName, k -> new HashSet<>()).contains(idStr);
+
+            if (!alreadyProcessed) {
+                ColumnMetadata idCol = new ColumnMetadata();
+                idCol.setColumnName("id");
+                idCol.setDataType(inferSqlType(parentId));
+                idCol.setPrimaryKey(true);
+                addColIfNotExists(parentMeta, idCol);
+                parentMeta.setPrimaryKeyColumn("id");
+                flatParent.put("id", parentId);
             }
-            
-            ColumnMetadata idCol = new ColumnMetadata();
-            idCol.setColumnName("id");
-            idCol.setDataType(inferSqlType(typedParentId));
-            idCol.setPrimaryKey(true);
-            addColIfNotExists(parentMeta, idCol);
-            parentMeta.setPrimaryKeyColumn("id");
-            flatParent.put("id", typedParentId);
 
             for (Map.Entry<String, Object> entry : doc.entrySet()) {
                 String key = entry.getKey();
@@ -416,12 +413,14 @@ public class UniversalTransformer implements IDataTransformer {
                 
                 if (key.endsWith("_id") && !key.endsWith("_ids") && value != null) {
                     String refTableName = key.substring(0, key.length() - 3);
-                    flatParent.put(key, value);
-                    
-                    ColumnMetadata refCol = new ColumnMetadata();
-                    refCol.setColumnName(key);
-                    refCol.setDataType(inferSqlType(value));
-                    addColIfNotExists(parentMeta, refCol);
+                    if (!alreadyProcessed) {
+                        flatParent.put(key, value);
+                        
+                        ColumnMetadata refCol = new ColumnMetadata();
+                        refCol.setColumnName(key);
+                        refCol.setDataType(inferSqlType(value));
+                        addColIfNotExists(parentMeta, refCol);
+                    }
                     
                     if (!tablesMetadata.containsKey(refTableName)) {
                         tablesMetadata.put(refTableName, new TableMetadata(refTableName, "public"));
@@ -433,7 +432,7 @@ public class UniversalTransformer implements IDataTransformer {
                     String refTableName = key.substring(0, key.length() - 4);
                     handleManyToManyJunction(relationalData, tablesMetadata, parentTableName, parentMeta, 
                             parentId, refTableName, (List<?>) value);
-                } else if (key.endsWith("s") && !key.endsWith("_ids") && value instanceof List) {
+                } else if ((key.endsWith("s") || value instanceof List) && value instanceof List) {
                     String refTableName = key;
                     
                     if (!tablesMetadata.containsKey(refTableName)) {
@@ -457,58 +456,16 @@ public class UniversalTransformer implements IDataTransformer {
                             Map<String, Object> childDoc = (Map<String, Object>) listItem;
                             Map<String, Object> flatChild = flattenNestedDoc(childDoc);
                             
-                            Object parentIdValue = parentId;
-                            if (parentId instanceof Number && !(parentId instanceof Float) && !(parentId instanceof Double)) {
-                                parentIdValue = parentId;
-                            } else if (parentId instanceof String) {
-                                try {
-                                    parentIdValue = Integer.parseInt((String) parentId);
-                                } catch (NumberFormatException e) {
-                                }
+                            Object childId = flatChild.get("id");
+                            if (childId == null) childId = flatChild.get("_id");
+                            if (childId == null) childId = UUID.randomUUID().toString();
+                            
+                            if (processedIds.computeIfAbsent(refTableName, k -> new HashSet<>()).add(childId.toString())) {
+                                flatChild.put(parentIdColumnName, parentId);
+                                flatChild.put("id", childId);
+                                relationalData.get(refTableName).add(flatChild);
+                                inferColumns(tablesMetadata.get(refTableName), flatChild);
                             }
-                            
-                            flatChild.put(parentIdColumnName, parentIdValue);
-                            relationalData.get(refTableName).add(flatChild);
-                            inferColumns(tablesMetadata.get(refTableName), flatChild);
-                        }
-                    }
-                } else if (value instanceof List) {
-                    String childTableName = key;
-                    
-                    if (!tablesMetadata.containsKey(childTableName)) {
-                        TableMetadata childMeta = new TableMetadata(childTableName, "public");
-                        ForeignKeyMetadata fk = new ForeignKeyMetadata();
-                        fk.setColumnName(parentTableName + "_id");
-                        fk.setReferencedTable(parentTableName);
-                        fk.setReferencedColumn("id");
-                        childMeta.addForeignKey(fk);
-                        tablesMetadata.put(childTableName, childMeta);
-                    }
-
-                    List<?> listValues = (List<?>) value;
-                    relationalData.putIfAbsent(childTableName, new ArrayList<>());
-
-                    String parentIdColumnName = parentTableName + "_id";
-                    
-                    for (Object listItem : listValues) {
-                        if (listItem instanceof Map) {
-                            @SuppressWarnings("unchecked")
-                            Map<String, Object> childDoc = (Map<String, Object>) listItem;
-                            Map<String, Object> flatChild = flattenNestedDoc(childDoc);
-                            
-                            Object parentIdValue = parentId;
-                            if (parentId instanceof Number && !(parentId instanceof Float) && !(parentId instanceof Double)) {
-                                parentIdValue = parentId;
-                            } else if (parentId instanceof String) {
-                                try {
-                                    parentIdValue = Integer.parseInt((String) parentId);
-                                } catch (NumberFormatException e) {
-                                }
-                            }
-                            
-                            flatChild.put(parentIdColumnName, parentIdValue);
-                            relationalData.get(childTableName).add(flatChild);
-                            inferColumns(tablesMetadata.get(childTableName), flatChild);
                         }
                     }
                 } else if (value instanceof Map) {
@@ -540,11 +497,13 @@ public class UniversalTransformer implements IDataTransformer {
                                     }
                                 }
                                 
-                                flatParent.put(refTableName + "_id", fkValue);
-                                ColumnMetadata fkCol = new ColumnMetadata();
-                                fkCol.setColumnName(refTableName + "_id");
-                                fkCol.setDataType(inferSqlType(fkValue));
-                                addColIfNotExists(parentMeta, fkCol);
+                                if (!alreadyProcessed) {
+                                    flatParent.put(refTableName + "_id", fkValue);
+                                    ColumnMetadata fkCol = new ColumnMetadata();
+                                    fkCol.setColumnName(refTableName + "_id");
+                                    fkCol.setDataType(inferSqlType(fkValue));
+                                    addColIfNotExists(parentMeta, fkCol);
+                                }
                                 
                                 if (!tablesMetadata.containsKey(refTableName)) {
                                     tablesMetadata.put(refTableName, new TableMetadata(refTableName, "public"));
@@ -552,25 +511,32 @@ public class UniversalTransformer implements IDataTransformer {
                             }
                         }
                     } else {
-                        for (Map.Entry<String, Object> embEntry : embedded.entrySet()) {
-                            String flatKey = key + "_" + embEntry.getKey();
-                            flatParent.put(flatKey, embEntry.getValue());
-                            
-                            ColumnMetadata col = new ColumnMetadata();
-                            col.setColumnName(flatKey);
-                            col.setDataType(inferSqlType(embEntry.getValue()));
-                            addColIfNotExists(parentMeta, col);
+                        if (!alreadyProcessed) {
+                            for (Map.Entry<String, Object> embEntry : embedded.entrySet()) {
+                                String flatKey = key + "_" + embEntry.getKey();
+                                flatParent.put(flatKey, embEntry.getValue());
+                                
+                                ColumnMetadata col = new ColumnMetadata();
+                                col.setColumnName(flatKey);
+                                col.setDataType(inferSqlType(embEntry.getValue()));
+                                addColIfNotExists(parentMeta, col);
+                            }
                         }
                     }
                 } else {
-                    flatParent.put(key, value);
-                    ColumnMetadata col = new ColumnMetadata();
-                    col.setColumnName(key);
-                    col.setDataType(inferSqlType(value));
-                    addColIfNotExists(parentMeta, col);
+                    if (!alreadyProcessed) {
+                        flatParent.put(key, value);
+                        ColumnMetadata col = new ColumnMetadata();
+                        col.setColumnName(key);
+                        col.setDataType(inferSqlType(value));
+                        addColIfNotExists(parentMeta, col);
+                    }
                 }
             }
-            relationalData.get(parentTableName).add(flatParent);
+            if (!alreadyProcessed) {
+                relationalData.get(parentTableName).add(flatParent);
+                processedIds.get(parentTableName).add(idStr);
+            }
         }
 
         logger.info("Flattened {} documents into {} tables", documents.size(), relationalData.size());
@@ -694,36 +660,22 @@ public class UniversalTransformer implements IDataTransformer {
         relationalData.putIfAbsent(junctionTableName, new ArrayList<>());
         
         for (Object relatedId : relatedIds) {
-            Map<String, Object> junctionRecord = new HashMap<>();
-            junctionRecord.put("id", UUID.randomUUID().toString());
+            if (relatedId == null) continue;
             
-            Object parentIdValue = parentId;
-            if (parentId instanceof Number && !(parentId instanceof Float) && !(parentId instanceof Double)) {
-                parentIdValue = parentId;
-            } else if (parentId instanceof String) {
-                try {
-                    parentIdValue = Integer.parseInt((String) parentId);
-                } catch (NumberFormatException e) {
-                }
+            // Deterministic key for junction de-duplication
+            String junctionKey = parentId.toString() + "_" + relatedId.toString();
+            if (processedIds.computeIfAbsent(junctionTableName, k -> new HashSet<>()).add(junctionKey)) {
+                Map<String, Object> junctionRecord = new HashMap<>();
+                junctionRecord.put("id", UUID.randomUUID().toString());
+                junctionRecord.put(parentTableName + "_id", parentId);
+                junctionRecord.put(refTableName + "_id", relatedId);
+                
+                relationalData.get(junctionTableName).add(junctionRecord);
+                inferColumns(tablesMetadata.get(junctionTableName), junctionRecord);
             }
-            junctionRecord.put(parentTableName + "_id", parentIdValue);
-            
-            Object refIdValue = relatedId;
-            if (relatedId instanceof Number && !(relatedId instanceof Float) && !(relatedId instanceof Double)) {
-                refIdValue = relatedId;
-            } else if (relatedId instanceof String) {
-                try {
-                    refIdValue = Integer.parseInt((String) relatedId);
-                } catch (NumberFormatException e) {
-                }
-            }
-            junctionRecord.put(refTableName + "_id", refIdValue);
-            
-            relationalData.get(junctionTableName).add(junctionRecord);
-            inferColumns(tablesMetadata.get(junctionTableName), junctionRecord);
         }
         
-        logger.info("Created junction table '{}' with {} records", junctionTableName, relatedIds.size());
+        logger.info("Created junction table '{}' with {} records (after de-duplication)", junctionTableName, relatedIds.size());
     }
 
     private ForeignKeyMetadata.RelationshipType getRelationshipTypeTo(TableMetadata table, String targetTableName) {
