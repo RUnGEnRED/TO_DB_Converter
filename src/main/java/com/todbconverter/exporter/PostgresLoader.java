@@ -119,6 +119,7 @@ public class PostgresLoader {
         List<ColumnMetadata> columns = table.getColumns();
         String schema = table.getSchema();
         String tableName = table.getTableName();
+        int batchSize = 1000;
         
         StringBuilder sql = new StringBuilder("INSERT INTO ");
         sql.append(escapeIdentifier(schema)).append(".").append(escapeIdentifier(tableName)).append(" (");
@@ -135,16 +136,17 @@ public class PostgresLoader {
         sql.append(") VALUES (").append(placeholders).append(")");
 
         try (PreparedStatement stmt = connection.prepareStatement(sql.toString())) {
+            int count = 0;
             for (Map<String, Object> row : data) {
                 for (int i = 0; i < columns.size(); i++) {
                     Object value = row.get(columns.get(i).getColumnName());
-                    if (value instanceof java.util.Date && !(value instanceof java.sql.Date)) {
-                        stmt.setTimestamp(i + 1, new java.sql.Timestamp(((java.util.Date) value).getTime()));
-                    } else {
-                        stmt.setObject(i + 1, value);
-                    }
+                    stmt.setObject(i + 1, com.todbconverter.util.TypeMapper.convertToSqlValue(value));
                 }
                 stmt.addBatch();
+                
+                if (++count % batchSize == 0) {
+                    stmt.executeBatch();
+                }
             }
             stmt.executeBatch();
             logger.info("Inserted {} records into {}", data.size(), table.getTableName());

@@ -1,5 +1,6 @@
 package com.todbconverter.transformer;
 
+import com.todbconverter.config.DatabaseConfig;
 import com.todbconverter.model.ColumnMetadata;
 import com.todbconverter.model.ForeignKeyMetadata;
 import com.todbconverter.model.TableMetadata;
@@ -20,6 +21,16 @@ import java.util.UUID;
 
 public class UniversalTransformer implements IDataTransformer {
     private static final Logger logger = LoggerFactory.getLogger(UniversalTransformer.class);
+    private boolean useReferencingStrategy = false;
+
+    public UniversalTransformer() {
+    }
+
+    public UniversalTransformer(DatabaseConfig config) {
+        if (config != null) {
+            this.useReferencingStrategy = config.useReferencingStrategy();
+        }
+    }
 
     @Override
     public List<Map<String, Object>> transformToDocuments(
@@ -45,17 +56,24 @@ public class UniversalTransformer implements IDataTransformer {
                     String referencedTable = fk.getReferencedTable();
                     
                     if (fk.getRelationshipType() == ForeignKeyMetadata.RelationshipType.MANY_TO_MANY) {
-                        handleManyToManyReference(document, parentTable, parentRecord, referencedTable, tablesMetadata, manyToManyIndexes);
-                    } else {
-                        Map<String, Object> refIndex = referenceIndexes.get(referencedTable);
-                        if (refIndex != null) {
+                        handleManyToManyReference(document, parentTable, parentRecord, referencedTable, tablesMetadata, manyToManyIndexes, referenceIndexes);
+                    } else if (fk.getRelationshipType() == ForeignKeyMetadata.RelationshipType.ONE_TO_ONE) {
+                        if (useReferencingStrategy) {
                             Object fkValue = document.get(fk.getColumnName());
                             if (fkValue != null) {
-                                Object referencedRecord = refIndex.get(fkValue.toString());
-                                if (referencedRecord instanceof Map) {
-                                    @SuppressWarnings("unchecked")
-                                    Map<String, Object> refRecordMap = (Map<String, Object>) referencedRecord;
-                                    document.put(referencedTable + "_data", new HashMap<>(refRecordMap));
+                                document.put(referencedTable + "_id", fkValue);
+                            }
+                        } else {
+                            Map<String, Object> refIndex = referenceIndexes.get(referencedTable);
+                            if (refIndex != null) {
+                                Object fkValue = document.get(fk.getColumnName());
+                                if (fkValue != null) {
+                                    Object referencedRecord = refIndex.get(fkValue.toString());
+                                    if (referencedRecord instanceof Map) {
+                                        @SuppressWarnings("unchecked")
+                                        Map<String, Object> refRecordMap = (Map<String, Object>) referencedRecord;
+                                        document.put(referencedTable, new HashMap<>(refRecordMap));
+                                    }
                                 }
                             }
                         }
@@ -73,12 +91,27 @@ public class UniversalTransformer implements IDataTransformer {
                         continue;
                     }
                     
+                    String fieldName = childTable;
+                    ForeignKeyMetadata.RelationshipType relType = null;
+                    if (childMeta != null) {
+                        relType = getRelationshipTypeTo(childMeta, parentTable.getTableName());
+                        if (relType == ForeignKeyMetadata.RelationshipType.ONE_TO_MANY) {
+                            if (!fieldName.endsWith("s")) {
+                                fieldName += "s";
+                            }
+                        }
+                    }
+                    
+                    if (useReferencingStrategy && relType == ForeignKeyMetadata.RelationshipType.ONE_TO_MANY) {
+                        continue;
+                    }
+                    
                     Map<Object, List<Map<String, Object>>> childIndex = childEntry.getValue();
                     Object parentId = parentRecord.get(pkColumn);
                     if (parentId != null && childIndex.containsKey(parentId)) {
-                        document.put(childTable, new ArrayList<>(childIndex.get(parentId)));
+                        document.put(fieldName, new ArrayList<>(childIndex.get(parentId)));
                     } else {
-                        document.put(childTable, new ArrayList<>());
+                        document.put(fieldName, new ArrayList<>());
                     }
                 }
             }
@@ -97,7 +130,8 @@ public class UniversalTransformer implements IDataTransformer {
             Map<String, Object> parentRecord,
             String referencedTableName,
             Map<String, TableMetadata> tablesMetadata,
-            Map<String, Map<Object, Set<Object>>> manyToManyIndexes) {
+            Map<String, Map<Object, Set<Object>>> manyToManyIndexes,
+            Map<String, Map<String, Object>> referenceIndexes) {
         
         String pkColumn = parentTable.getPrimaryKeyColumn();
         if (pkColumn == null) return;
@@ -110,11 +144,33 @@ public class UniversalTransformer implements IDataTransformer {
         
         Set<Object> relatedIds = m2mIndex.get(parentId);
         if (relatedIds == null || relatedIds.isEmpty()) {
-            document.put(referencedTableName + "_ids", new ArrayList<>());
+            String emptyFieldName = referencedTableName;
+            if (!emptyFieldName.endsWith("s")) {
+                emptyFieldName += "s";
+            }
+            document.put(emptyFieldName, new ArrayList<>());
             return;
         }
         
-        document.put(referencedTableName + "_ids", new ArrayList<>(relatedIds));
+        List<Map<String, Object>> embeddedData = new ArrayList<>();
+        Map<String, Object> refIndex = referenceIndexes.get(referencedTableName);
+        
+        if (refIndex != null) {
+            for (Object relatedId : relatedIds) {
+                Object referencedData = refIndex.get(relatedId.toString());
+                if (referencedData instanceof Map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> refDataMap = (Map<String, Object>) referencedData;
+                    embeddedData.add(new HashMap<>(refDataMap));
+                }
+            }
+        }
+        
+        String fieldName = referencedTableName;
+        if (!fieldName.endsWith("s")) {
+            fieldName += "s";
+        }
+        document.put(fieldName, embeddedData);
     }
     
     private Map<String, Map<Object, Set<Object>>> buildManyToManyIndexes(
@@ -326,7 +382,6 @@ public class UniversalTransformer implements IDataTransformer {
         for (Map<String, Object> doc : documents) {
             Map<String, Object> flatParent = new HashMap<>();
             
-            // Check "id" first (application-defined), then "_id" (MongoDB ObjectId), then fallback to UUID
             Object parentId = doc.get("id");
             if (parentId == null) {
                 parentId = doc.get("_id");
@@ -335,7 +390,6 @@ public class UniversalTransformer implements IDataTransformer {
                 parentId = UUID.randomUUID().toString();
             }
             
-            // Try to infer the type of ID from the actual value
             Object typedParentId = parentId;
             if (parentId instanceof Number && !(parentId instanceof Float) && !(parentId instanceof Double)) {
                 typedParentId = parentId;
@@ -343,7 +397,6 @@ public class UniversalTransformer implements IDataTransformer {
                 try {
                     typedParentId = Integer.parseInt((String) parentId);
                 } catch (NumberFormatException e) {
-                    // keep as String
                 }
             }
             
@@ -361,12 +414,67 @@ public class UniversalTransformer implements IDataTransformer {
 
                 if (key.equals("_id") || key.equals("id")) continue;
                 
+                if (key.endsWith("_id") && !key.endsWith("_ids") && value != null) {
+                    String refTableName = key.substring(0, key.length() - 3);
+                    flatParent.put(key, value);
+                    
+                    ColumnMetadata refCol = new ColumnMetadata();
+                    refCol.setColumnName(key);
+                    refCol.setDataType(inferSqlType(value));
+                    addColIfNotExists(parentMeta, refCol);
+                    
+                    if (!tablesMetadata.containsKey(refTableName)) {
+                        tablesMetadata.put(refTableName, new TableMetadata(refTableName, "public"));
+                    }
+                    continue;
+                }
+                
                 if (key.endsWith("_ids") && value instanceof List) {
                     String refTableName = key.substring(0, key.length() - 4);
                     handleManyToManyJunction(relationalData, tablesMetadata, parentTableName, parentMeta, 
                             parentId, refTableName, (List<?>) value);
+                } else if (key.endsWith("s") && !key.endsWith("_ids") && value instanceof List) {
+                    String refTableName = key;
+                    
+                    if (!tablesMetadata.containsKey(refTableName)) {
+                        TableMetadata childMeta = new TableMetadata(refTableName, "public");
+                        ForeignKeyMetadata fk = new ForeignKeyMetadata();
+                        fk.setColumnName(parentTableName + "_id");
+                        fk.setReferencedTable(parentTableName);
+                        fk.setReferencedColumn("id");
+                        childMeta.addForeignKey(fk);
+                        tablesMetadata.put(refTableName, childMeta);
+                    }
+                    
+                    List<?> listValues = (List<?>) value;
+                    relationalData.putIfAbsent(refTableName, new ArrayList<>());
+                    
+                    String parentIdColumnName = parentTableName + "_id";
+                    
+                    for (Object listItem : listValues) {
+                        if (listItem instanceof Map) {
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> childDoc = (Map<String, Object>) listItem;
+                            Map<String, Object> flatChild = flattenNestedDoc(childDoc);
+                            
+                            Object parentIdValue = parentId;
+                            if (parentId instanceof Number && !(parentId instanceof Float) && !(parentId instanceof Double)) {
+                                parentIdValue = parentId;
+                            } else if (parentId instanceof String) {
+                                try {
+                                    parentIdValue = Integer.parseInt((String) parentId);
+                                } catch (NumberFormatException e) {
+                                }
+                            }
+                            
+                            flatChild.put(parentIdColumnName, parentIdValue);
+                            relationalData.get(refTableName).add(flatChild);
+                            inferColumns(tablesMetadata.get(refTableName), flatChild);
+                        }
+                    }
                 } else if (value instanceof List) {
                     String childTableName = key;
+                    
                     if (!tablesMetadata.containsKey(childTableName)) {
                         TableMetadata childMeta = new TableMetadata(childTableName, "public");
                         ForeignKeyMetadata fk = new ForeignKeyMetadata();
@@ -380,7 +488,6 @@ public class UniversalTransformer implements IDataTransformer {
                     List<?> listValues = (List<?>) value;
                     relationalData.putIfAbsent(childTableName, new ArrayList<>());
 
-                    TableMetadata existingChildMeta = tablesMetadata.get(childTableName);
                     String parentIdColumnName = parentTableName + "_id";
                     
                     for (Object listItem : listValues) {
@@ -390,21 +497,17 @@ public class UniversalTransformer implements IDataTransformer {
                             Map<String, Object> flatChild = flattenNestedDoc(childDoc);
                             
                             Object parentIdValue = parentId;
-                            
-                            // Try to infer type from the parent ID value
                             if (parentId instanceof Number && !(parentId instanceof Float) && !(parentId instanceof Double)) {
                                 parentIdValue = parentId;
                             } else if (parentId instanceof String) {
                                 try {
                                     parentIdValue = Integer.parseInt((String) parentId);
                                 } catch (NumberFormatException e) {
-                                    // keep as String
                                 }
                             }
                             
                             flatChild.put(parentIdColumnName, parentIdValue);
                             relationalData.get(childTableName).add(flatChild);
-
                             inferColumns(tablesMetadata.get(childTableName), flatChild);
                         }
                     }
@@ -412,8 +515,15 @@ public class UniversalTransformer implements IDataTransformer {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> embedded = (Map<String, Object>) value;
                     
-                    if (key.endsWith("_data")) {
-                        String refTableName = key.substring(0, key.length() - 5);
+                    boolean isRelational = (key.endsWith("_data") || embedded.containsKey("id") || embedded.containsKey("_id"));
+                    
+                    if (isRelational) {
+                        String refTableName;
+                        if (key.endsWith("_data")) {
+                            refTableName = key.substring(0, key.length() - 5);
+                        } else {
+                            refTableName = key;
+                        }
                         
                         if (embedded.containsKey("id") || embedded.containsKey("_id")) {
                             Object refId = embedded.get("id");
@@ -421,25 +531,24 @@ public class UniversalTransformer implements IDataTransformer {
                             
                             if (refId != null) {
                                 Object fkValue = refId;
-                                
-                                // Try to infer type from the actual value in embedded doc
                                 if (refId instanceof Number && !(refId instanceof Float) && !(refId instanceof Double)) {
                                     fkValue = refId;
                                 } else if (refId instanceof String) {
-                                    // Try to parse as integer if possible
                                     try {
                                         fkValue = Integer.parseInt((String) refId);
                                     } catch (NumberFormatException e) {
-                                        // keep as String
                                     }
                                 }
                                 
                                 flatParent.put(refTableName + "_id", fkValue);
-                                
                                 ColumnMetadata fkCol = new ColumnMetadata();
                                 fkCol.setColumnName(refTableName + "_id");
                                 fkCol.setDataType(inferSqlType(fkValue));
                                 addColIfNotExists(parentMeta, fkCol);
+                                
+                                if (!tablesMetadata.containsKey(refTableName)) {
+                                    tablesMetadata.put(refTableName, new TableMetadata(refTableName, "public"));
+                                }
                             }
                         }
                     } else {
@@ -475,40 +584,43 @@ public class UniversalTransformer implements IDataTransformer {
             String key = entry.getKey();
             Object value = entry.getValue();
             
-            if (key.endsWith("_data") && value instanceof Map) {
+            if (value instanceof Map) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> refData = (Map<String, Object>) value;
-                String refTableName = key.substring(0, key.length() - 5);
+                boolean isRelational = (key.endsWith("_data") || refData.containsKey("id") || refData.containsKey("_id"));
                 
-                if (refData.containsKey("id") || refData.containsKey("_id")) {
-                    // Check "id" first, then "_id"
-                    Object refId = refData.get("id");
-                    if (refId == null) refId = refData.get("_id");
+                if (isRelational) {
+                    String refTableName;
+                    if (key.endsWith("_data")) {
+                        refTableName = key.substring(0, key.length() - 5);
+                    } else {
+                        refTableName = key;
+                    }
                     
-                    if (refId != null) {
-                        Object fkValue = refId;
+                    if (refData.containsKey("id") || refData.containsKey("_id")) {
+                        Object refId = refData.get("id");
+                        if (refId == null) refId = refData.get("_id");
                         
-                        // Try to infer type from the actual value
-                        if (refId instanceof Number && !(refId instanceof Float) && !(refId instanceof Double)) {
-                            fkValue = refId;
-                        } else if (refId instanceof String) {
-                            try {
-                                fkValue = Integer.parseInt((String) refId);
-                            } catch (NumberFormatException e) {
-                                // keep as String
+                        if (refId != null) {
+                            Object fkValue = refId;
+                            if (refId instanceof Number && !(refId instanceof Float) && !(refId instanceof Double)) {
+                                fkValue = refId;
+                            } else if (refId instanceof String) {
+                                try {
+                                    fkValue = Integer.parseInt((String) refId);
+                                } catch (NumberFormatException e) {
+                                }
                             }
+                            flat.put(refTableName + "_id", fkValue);
                         }
-                        
-                        flat.put(refTableName + "_id", fkValue);
+                    }
+                } else {
+                    for (Map.Entry<String, Object> nestedEntry : refData.entrySet()) {
+                        flat.put(key + "_" + nestedEntry.getKey(), nestedEntry.getValue());
                     }
                 }
-            } else if (value instanceof Map) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> nested = (Map<String, Object>) value;
-                for (Map.Entry<String, Object> nestedEntry : nested.entrySet()) {
-                    flat.put(key + "_" + nestedEntry.getKey(), nestedEntry.getValue());
-                }
-            } else {
+                } else if (value instanceof List) {
+                } else {
                 flat.put(key, value);
             }
         }
@@ -529,16 +641,13 @@ public class UniversalTransformer implements IDataTransformer {
                 .filter(c -> c.getColumnName().equals(columnName))
                 .findFirst().orElse(null);
             
-            // Only add new columns, don't change existing types
             if (existingCol == null) {
                 ColumnMetadata col = new ColumnMetadata();
                 col.setColumnName(columnName);
                 col.setDataType(inferSqlType(value));
-                
                 if (columnName.equals("id") || columnName.equals("_id")) {
                     col.setPrimaryKey(true);
                 }
-                
                 tableMeta.addColumn(col);
             }
         }
@@ -611,27 +720,31 @@ public class UniversalTransformer implements IDataTransformer {
             junctionRecord.put(refTableName + "_id", refIdValue);
             
             relationalData.get(junctionTableName).add(junctionRecord);
-            
             inferColumns(tablesMetadata.get(junctionTableName), junctionRecord);
         }
         
         logger.info("Created junction table '{}' with {} records", junctionTableName, relatedIds.size());
     }
 
-    String inferSqlTypeForTest(Object value) {
+    private ForeignKeyMetadata.RelationshipType getRelationshipTypeTo(TableMetadata table, String targetTableName) {
+        if (table == null || targetTableName == null) return null;
+        
+        List<ForeignKeyMetadata> fks = table.getForeignKeys();
+        if (fks == null) return null;
+        
+        for (ForeignKeyMetadata fk : fks) {
+            if (fk.getReferencedTable().equalsIgnoreCase(targetTableName)) {
+                return fk.getRelationshipType();
+            }
+        }
+        return null;
+    }
+
+    public String inferSqlTypeForTest(Object value) {
         return inferSqlType(value);
     }
 
     private String inferSqlType(Object value) {
-        if (value == null) return "VARCHAR";
-        if (value instanceof Integer) return "INT";
-        if (value instanceof Long) return "BIGINT";
-        if (value instanceof Double || value instanceof Float) return "DOUBLE PRECISION";
-        if (value instanceof BigDecimal) return "DECIMAL";
-        if (value instanceof Boolean) return "BOOLEAN";
-        if (value instanceof LocalDateTime) return "TIMESTAMP";
-        if (value instanceof LocalDate) return "DATE";
-        if (value instanceof java.util.Date) return "TIMESTAMP";
-        return "VARCHAR";
+        return com.todbconverter.util.TypeMapper.inferSqlType(value);
     }
 }

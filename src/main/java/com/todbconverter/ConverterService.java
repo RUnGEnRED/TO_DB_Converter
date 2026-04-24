@@ -15,10 +15,12 @@ import com.todbconverter.exporter.PostgresLoader;
 import com.todbconverter.model.TableMetadata;
 import com.todbconverter.transformer.UniversalTransformer;
 import com.todbconverter.transformer.IDataTransformer;
+import com.todbconverter.transformer.MongoDbPatternOptimizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +32,7 @@ public class ConverterService {
     private final IMongoDBConnector mongoConnection;
     private final DatabaseConfig config;
     private final DatabaseConfig.ConversionDirection direction;
+    private final MongoDbPatternOptimizer patternOptimizer;
 
     public ConverterService(DatabaseConfig config) {
         this(config, null);
@@ -59,6 +62,8 @@ public class ConverterService {
                     config.getMongoPassword()
             );
         }
+        
+        this.patternOptimizer = new MongoDbPatternOptimizer(config);
     }
 
     public void convert() throws Exception {
@@ -94,18 +99,31 @@ public class ConverterService {
             allData.put(table.getTableName(), data);
         }
 
-        IDataTransformer transformer = new UniversalTransformer();
-        IDocumentLoader exporter = new MongoDBExporter(mongoConnection.getDatabase());
+        IDataTransformer transformer = new UniversalTransformer(config);
+        MongoDBExporter exporter = new MongoDBExporter(mongoConnection.getDatabase());
 
         for (TableMetadata table : tables) {
             String tableName = table.getTableName();
-            List<Map<String, Object>> tableData = allData.get(tableName);
+            
+            // Create indexes on PK and FKs
+            List<String> indexFields = new ArrayList<>();
+            indexFields.add(table.getPrimaryKeyColumn());
+            for (com.todbconverter.model.ForeignKeyMetadata fk : table.getForeignKeys()) {
+                indexFields.add(fk.getColumnName());
+            }
+            exporter.createIndexes(tableName, indexFields);
 
-            List<Map<String, Object>> documents = transformer.transformToDocuments(
-                    table, tableData, allData, tablesMap
-            );
+            dataExtractor.extractDataInBatches(table, 1000, batch -> {
+                List<Map<String, Object>> documents = transformer.transformToDocuments(
+                        table, batch, allData, tablesMap
+                );
+                
+                Map<String, List<Map<String, Object>>> optimizedCollections = patternOptimizer.applyPatterns(documents, tableName);
 
-            exporter.loadDocuments(tableName, documents);
+                for (Map.Entry<String, List<Map<String, Object>>> entry : optimizedCollections.entrySet()) {
+                    exporter.loadDocuments(entry.getKey(), entry.getValue());
+                }
+            });
         }
     }
 
@@ -118,31 +136,52 @@ public class ConverterService {
         Connection sqlConnection = postgresConnection.getConnection();
         boolean dropTables = config.shouldDropExistingTables();
         PostgresLoader sqlLoader = new PostgresLoader(sqlConnection, dropTables);
-        IDataTransformer transformer = new UniversalTransformer();
+        UniversalTransformer transformer = new UniversalTransformer(config);
 
         List<String> collections = mongoExtractor.listCollections();
         Map<String, TableMetadata> tablesMetadata = new HashMap<>();
-        Map<String, List<Map<String, Object>>> allRelationalData = new HashMap<>();
 
+        // Phase 1: Metadata Discovery (use small sample from each collection)
+        logger.info("Phase 1: Discovering schema from MongoDB collections...");
         for (String collectionName : collections) {
-            List<Map<String, Object>> docs = mongoExtractor.extractDocuments(collectionName);
-            
-            Map<String, List<Map<String, Object>>> relationalData = 
-                transformer.flattenToRelational(collectionName, docs, tablesMetadata);
-            
-            for (Map.Entry<String, List<Map<String, Object>>> entry : relationalData.entrySet()) {
-                String tableName = entry.getKey();
-                List<Map<String, Object>> existingData = allRelationalData.get(tableName);
-                if (existingData != null && !existingData.isEmpty()) {
-                    logger.debug("Skipping {} - data already loaded from embedded documents", tableName);
-                    continue;
-                }
-                allRelationalData.putIfAbsent(tableName, new java.util.ArrayList<>());
-                allRelationalData.get(tableName).addAll(entry.getValue());
-            }
+            mongoExtractor.extractDocumentsInBatches(collectionName, 10, batch -> {
+                transformer.flattenToRelational(collectionName, batch, tablesMetadata);
+            });
         }
 
-        sqlLoader.loadAllTables(tablesMetadata, allRelationalData);
+        // Phase 2: Create Tables
+        logger.info("Phase 2: Creating PostgreSQL tables...");
+        for (TableMetadata table : tablesMetadata.values()) {
+            sqlLoader.createTable(table);
+        }
+
+        // Phase 3: Data Loading in Batches
+        logger.info("Phase 3: Loading data in batches...");
+        for (String collectionName : collections) {
+            mongoExtractor.extractDocumentsInBatches(collectionName, 1000, batch -> {
+                try {
+                    Map<String, List<Map<String, Object>>> relationalData = 
+                        transformer.flattenToRelational(collectionName, batch, tablesMetadata);
+                    
+                    for (Map.Entry<String, List<Map<String, Object>>> entry : relationalData.entrySet()) {
+                        sqlLoader.loadData(tablesMetadata.get(entry.getKey()), entry.getValue());
+                    }
+                } catch (java.sql.SQLException e) {
+                    logger.error("Error loading batch from collection {}: {}", collectionName, e.getMessage());
+                }
+            });
+        }
+
+        // Phase 4: Adding Foreign Keys
+        logger.info("Phase 4: Adding foreign keys...");
+        for (TableMetadata table : tablesMetadata.values()) {
+            try {
+                sqlLoader.addForeignKeys(table);
+            } catch (java.sql.SQLException e) {
+                logger.warn("Failed to add some foreign keys for {}: {}. This is common in schema-less to relational conversion.", 
+                        table.getTableName(), e.getMessage());
+            }
+        }
     }
 
     public void close() {

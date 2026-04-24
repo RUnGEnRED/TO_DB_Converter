@@ -30,9 +30,16 @@ public class MongoExtractor {
     }
 
     public List<Map<String, Object>> extractDocuments(String collectionName) {
+        List<Map<String, Object>> allDocs = new ArrayList<>();
+        extractDocumentsInBatches(collectionName, 1000, allDocs::addAll);
+        return allDocs;
+    }
+
+    public void extractDocumentsInBatches(String collectionName, int batchSize, java.util.function.Consumer<List<Map<String, Object>>> batchConsumer) {
         MongoCollection<Document> collection = database.getCollection(collectionName);
-        List<Map<String, Object>> data = new ArrayList<>();
-        for (Document doc : collection.find()) {
+        List<Map<String, Object>> batch = new ArrayList<>();
+        
+        for (Document doc : collection.find().batchSize(batchSize)) {
             Map<String, Object> record = new HashMap<>();
             for (Map.Entry<String, Object> entry : doc.entrySet()) {
                 Object value = entry.getValue();
@@ -42,9 +49,16 @@ public class MongoExtractor {
                     record.put(entry.getKey(), value);
                 }
             }
-            data.add(record);
+            batch.add(record);
+            
+            if (batch.size() >= batchSize) {
+                batchConsumer.accept(batch);
+                batch.clear();
+            }
         }
-        logger.info("Extracted {} documents from collection {}", data.size(), collectionName);
-        return data;
+        
+        if (!batch.isEmpty()) {
+            batchConsumer.accept(batch);
+        }
     }
 }

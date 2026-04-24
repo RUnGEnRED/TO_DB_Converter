@@ -179,13 +179,13 @@ class UniversalTransformerTest {
         
         Map<String, Object> order1 = documents.get(0);
         assertEquals(10, order1.get("id"));
-        assertNotNull(order1.get("klient_data"));
-        assertEquals("Jan", ((Map<?, ?>) order1.get("klient_data")).get("imie"));
+        assertNotNull(order1.get("klient"));
+        assertEquals("Jan", ((Map<?, ?>) order1.get("klient")).get("imie"));
         
         Map<String, Object> order2 = documents.get(1);
         assertEquals(11, order2.get("id"));
-        assertNotNull(order2.get("klient_data"));
-        assertEquals("Anna", ((Map<?, ?>) order2.get("klient_data")).get("imie"));
+        assertNotNull(order2.get("klient"));
+        assertEquals("Anna", ((Map<?, ?>) order2.get("klient")).get("imie"));
     }
 
     @Test
@@ -281,17 +281,17 @@ class UniversalTransformerTest {
     void testInferSqlType() {
         UniversalTransformer t = new UniversalTransformer();
         
-        assertEquals("INT", t.inferSqlTypeForTest(42));
+        assertEquals("INTEGER", t.inferSqlTypeForTest(10));
         assertEquals("BIGINT", t.inferSqlTypeForTest(42L));
         assertEquals("DOUBLE PRECISION", t.inferSqlTypeForTest(3.14));
         assertEquals("DOUBLE PRECISION", t.inferSqlTypeForTest(3.14f));
         assertEquals("BOOLEAN", t.inferSqlTypeForTest(true));
-        assertEquals("DECIMAL", t.inferSqlTypeForTest(new BigDecimal("99.99")));
+        assertEquals("DECIMAL(19,4)", t.inferSqlTypeForTest(new BigDecimal("3.14")));
         assertEquals("TIMESTAMP", t.inferSqlTypeForTest(LocalDateTime.now()));
         assertEquals("DATE", t.inferSqlTypeForTest(LocalDate.now()));
         assertEquals("TIMESTAMP", t.inferSqlTypeForTest(new java.util.Date()));
-        assertEquals("VARCHAR", t.inferSqlTypeForTest("test"));
-        assertEquals("VARCHAR", t.inferSqlTypeForTest(null));
+        assertEquals("TEXT", t.inferSqlTypeForTest("hello"));
+        assertEquals("VARCHAR(255)", t.inferSqlTypeForTest(null));
     }
 
     @Test
@@ -401,9 +401,10 @@ class UniversalTransformerTest {
         
         Map<String, Object> aliceDoc = documents.get(0);
         assertEquals("Alice", aliceDoc.get("name"));
-        assertNotNull(aliceDoc.get("courses_ids"));
-        List<?> aliceCourses = (List<?>) aliceDoc.get("courses_ids");
-        assertTrue(aliceCourses.contains(101) || aliceCourses.contains("101"));
+        assertNotNull(aliceDoc.get("courses"));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> aliceCourses = (List<Map<String, Object>>) aliceDoc.get("courses");
+        assertFalse(aliceCourses.isEmpty());
     }
 
     @Test
@@ -528,6 +529,7 @@ class UniversalTransformerTest {
         fk.setColumnName("klient_id");
         fk.setReferencedTable("klient");
         fk.setReferencedColumn("id");
+        fk.setRelationshipType(ForeignKeyMetadata.RelationshipType.ONE_TO_ONE);
         table.addForeignKey(fk);
         
         return table;

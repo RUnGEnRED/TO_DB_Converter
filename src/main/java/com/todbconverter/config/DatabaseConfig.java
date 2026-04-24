@@ -17,15 +17,27 @@ public class DatabaseConfig {
     }
     
     private final Properties properties;
+    
+    public DatabaseConfig() {
+        this.properties = new Properties();
+    }
+
+    public DatabaseConfig(Properties properties) {
+        this.properties = properties;
+    }
 
     public DatabaseConfig(String configFile) throws IOException {
-        properties = new Properties();
+        this();
         try (InputStream input = getClass().getClassLoader().getResourceAsStream(configFile)) {
             if (input == null) {
                 throw new IOException("Unable to find " + configFile);
             }
             properties.load(input);
         }
+    }
+    
+    public Properties getProperties() {
+        return properties;
     }
 
     public String getPostgresHost() {
@@ -117,6 +129,66 @@ public class DatabaseConfig {
         return Boolean.parseBoolean(properties.getProperty("postgres.dropExistingTables", "true"));
     }
 
+    public boolean useReferencingStrategy() {
+        return "referencing".equalsIgnoreCase(properties.getProperty("relationship.strategy", "embedding"));
+    }
+    
+    public boolean useAttributePattern() {
+        return Boolean.parseBoolean(properties.getProperty("pattern.attribute.enabled", "true"));
+    }
+    
+    public int getAttributePatternThreshold() {
+        return Integer.parseInt(properties.getProperty("pattern.attribute.threshold", "3"));
+    }
+    
+    public boolean useBucketPattern() {
+        return Boolean.parseBoolean(properties.getProperty("pattern.bucket.enabled", "false"));
+    }
+    
+    public int getBucketSize() {
+        return Integer.parseInt(properties.getProperty("pattern.bucket.size", "10"));
+    }
+    
+    public boolean useSubsetPattern() {
+        return Boolean.parseBoolean(properties.getProperty("pattern.subset.enabled", "false"));
+    }
+    
+    public int getSubsetLimit() {
+        return Integer.parseInt(properties.getProperty("pattern.subset.limit", "10"));
+    }
+    
+    public boolean useOutlierPattern() {
+        return Boolean.parseBoolean(properties.getProperty("pattern.outlier.enabled", "false"));
+    }
+    
+    public int getOutlierThreshold() {
+        return Integer.parseInt(properties.getProperty("pattern.outlier.threshold", "50"));
+    }
+
+    public String getBucketKey() {
+        return properties.getProperty("pattern.bucket.key");
+    }
+
+    public boolean useComputedPattern() {
+        return Boolean.parseBoolean(properties.getProperty("pattern.computed.enabled", "false"));
+    }
+
+    public String getComputedFields() {
+        return properties.getProperty("pattern.computed.fields", "");
+    }
+
+    public boolean useApproximationPattern() {
+        return Boolean.parseBoolean(properties.getProperty("pattern.approximation.enabled", "false"));
+    }
+
+    public int getApproximationGranularity() {
+        return Integer.parseInt(properties.getProperty("pattern.approximation.granularity", "100"));
+    }
+
+    public String getApproximationFields() {
+        return properties.getProperty("pattern.approximation.fields", "");
+    }
+    
     public ConversionDirection overrideDirection(String cliDirection) {
         if (cliDirection == null || cliDirection.isEmpty()) {
             return getConversionDirection();

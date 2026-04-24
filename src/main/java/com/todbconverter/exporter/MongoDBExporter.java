@@ -29,6 +29,10 @@ public class MongoDBExporter implements IDocumentLoader {
 
     @Override
     public void loadDocuments(String collectionName, List<Map<String, Object>> documents) {
+        loadDocuments(collectionName, documents, 1000);
+    }
+
+    public void loadDocuments(String collectionName, List<Map<String, Object>> documents, int batchSize) {
         if (!isValidCollectionName(collectionName)) {
             throw new IllegalArgumentException("Invalid collection name: " + collectionName);
         }
@@ -38,20 +42,37 @@ public class MongoDBExporter implements IDocumentLoader {
         }
 
         MongoCollection<Document> collection = database.getCollection(collectionName);
-        List<Document> bsonDocuments = new ArrayList<>();
+        
+        for (int i = 0; i < documents.size(); i += batchSize) {
+            int end = Math.min(i + batchSize, documents.size());
+            List<Map<String, Object>> batch = documents.subList(i, end);
+            List<Document> bsonDocuments = new ArrayList<>();
 
-        for (Map<String, Object> doc : documents) {
-            try {
-                Document bsonDoc = new Document(doc);
-                bsonDocuments.add(bsonDoc);
-            } catch (Exception e) {
-                logger.error("Failed to convert document to BSON: {}", e.getMessage());
-                throw new IllegalArgumentException("Document contains non-BSON-compatible types", e);
+            for (Map<String, Object> doc : batch) {
+                try {
+                    Document bsonDoc = new Document(doc);
+                    bsonDocuments.add(bsonDoc);
+                } catch (Exception e) {
+                    logger.error("Failed to convert document to BSON: {}", e.getMessage());
+                }
+            }
+
+            if (!bsonDocuments.isEmpty()) {
+                collection.insertMany(bsonDocuments);
             }
         }
+        
+        logger.info("Exported {} documents to collection: {}", documents.size(), collectionName);
+    }
 
-        collection.insertMany(bsonDocuments);
-        logger.info("Exported {} documents to collection: {}", bsonDocuments.size(), collectionName);
+    public void createIndexes(String collectionName, List<String> indexFields) {
+        if (indexFields == null || indexFields.isEmpty()) return;
+        
+        MongoCollection<Document> collection = database.getCollection(collectionName);
+        for (String field : indexFields) {
+            logger.info("Creating index on {}.{}", collectionName, field);
+            collection.createIndex(new Document(field, 1));
+        }
     }
 
     private boolean isValidCollectionName(String name) {

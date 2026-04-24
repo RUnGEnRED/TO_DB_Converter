@@ -23,22 +23,28 @@ public class DataExtractor {
     }
 
     public List<Map<String, Object>> extractData(TableMetadata table) throws SQLException {
-        List<Map<String, Object>> records = new ArrayList<>();
-        String query = buildQuery(table);
+        List<Map<String, Object>> allRecords = new ArrayList<>();
+        extractDataInBatches(table, 1000, allRecords::addAll);
+        return allRecords;
+    }
 
-        logger.debug("Executing query: {}", query);
+    public void extractDataInBatches(TableMetadata table, int batchSize, java.util.function.Consumer<List<Map<String, Object>>> batchConsumer) throws SQLException {
+        String query = buildQuery(table);
+        logger.debug("Executing batch query: {}", query);
 
         if (table.getColumns() == null || table.getColumns().isEmpty()) {
             throw new SQLException("No columns defined in table metadata: " + table.getTableName());
         }
 
-        try (PreparedStatement stmt = connection.prepareStatement(query);
-             ResultSet rs = stmt.executeQuery()) {
-
-            while (rs.next()) {
-                Map<String, Object> record = new HashMap<>();
-                for (ColumnMetadata column : table.getColumns()) {
-                    try {
+        try (PreparedStatement stmt = connection.prepareStatement(query)) {
+            // Set fetch size to prevent JDBC driver from loading everything at once
+            stmt.setFetchSize(batchSize);
+            
+            try (ResultSet rs = stmt.executeQuery()) {
+                List<Map<String, Object>> batch = new ArrayList<>();
+                while (rs.next()) {
+                    Map<String, Object> record = new HashMap<>();
+                    for (ColumnMetadata column : table.getColumns()) {
                         Object value = rs.getObject(column.getColumnName());
                         if (value != null) {
                             String dataType = column.getDataType();
@@ -51,22 +57,30 @@ public class DataExtractor {
                             }
                         }
                         record.put(column.getColumnName(), value);
-                    } catch (SQLException e) {
-                        logger.error("Error extracting column '{}' from table {}: {}", 
-                            column.getColumnName(), table.getTableName(), e.getMessage());
-                        throw new SQLException("Failed to extract column: " + column.getColumnName(), e);
+                    }
+                    batch.add(record);
+                    
+                    if (batch.size() >= batchSize) {
+                        batchConsumer.accept(batch);
+                        batch.clear();
                     }
                 }
-                records.add(record);
+                if (!batch.isEmpty()) {
+                    batchConsumer.accept(batch);
+                }
             }
         }
-
-        logger.info("Extracted {} records from table {}", records.size(), table.getTableName());
-        return records;
     }
 
     private String buildQuery(TableMetadata table) {
-        String schemaPrefix = table.getSchema() != null ? table.getSchema() + "." : "";
-        return "SELECT * FROM " + schemaPrefix + table.getTableName();
+        StringBuilder sb = new StringBuilder("SELECT ");
+        List<ColumnMetadata> columns = table.getColumns();
+        for (int i = 0; i < columns.size(); i++) {
+            sb.append("\"").append(columns.get(i).getColumnName()).append("\"");
+            if (i < columns.size() - 1) sb.append(", ");
+        }
+        String schemaPrefix = table.getSchema() != null ? "\"" + table.getSchema() + "\"." : "";
+        sb.append(" FROM ").append(schemaPrefix).append("\"").append(table.getTableName()).append("\"");
+        return sb.toString();
     }
 }
