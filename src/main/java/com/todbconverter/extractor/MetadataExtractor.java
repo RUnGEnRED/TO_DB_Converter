@@ -184,9 +184,10 @@ public class MetadataExtractor implements IMetadataExtractor {
         logger.info("Detecting many-to-many relationships (including junction tables)");
 
         for (TableMetadata table : tables) {
-            // Check for bidirectional FKs (existing logic)
+            // Check for bidirectional FKs - skip self-referencing
             for (ForeignKeyMetadata fk : table.getForeignKeys()) {
                 String referencedTableName = fk.getReferencedTable();
+                if (table.getTableName().equalsIgnoreCase(referencedTableName)) continue;
                 TableMetadata referencedTable = findTableByName(tables, referencedTableName);
 
                 if (referencedTable != null && hasForeignKeyTo(referencedTable, table.getTableName())) {
@@ -196,23 +197,17 @@ public class MetadataExtractor implements IMetadataExtractor {
                 }
             }
 
-            // Check for Junction Tables (new logic)
-            // A junction table usually has exactly 2 foreign keys and potentially no other data
+            // Check for Junction Tables
             List<ForeignKeyMetadata> fks = table.getForeignKeys();
-            if (fks.size() == 2 && table.getColumns().size() <= 4) { // ID + 2 FKs + maybe a timestamp
+            if (fks.size() == 2 && table.getColumns().size() <= 5) { // PK + 2 FKs + up to 2 extra cols
                 ForeignKeyMetadata fk1 = fks.get(0);
                 ForeignKeyMetadata fk2 = fks.get(1);
-                
+
                 logger.info("Table '{}' identified as a junction table between '{}' and '{}'",
                         table.getTableName(), fk1.getReferencedTable(), fk2.getReferencedTable());
-                
-                // Mark both sides as M:N
-                TableMetadata t1 = findTableByName(tables, fk1.getReferencedTable());
-                TableMetadata t2 = findTableByName(tables, fk2.getReferencedTable());
-                
-                if (t1 != null && t2 != null) {
-                    // This is handled during transformation by looking at the junction table
-                }
+
+                fk1.setRelationshipType(ForeignKeyMetadata.RelationshipType.MANY_TO_MANY);
+                fk2.setRelationshipType(ForeignKeyMetadata.RelationshipType.MANY_TO_MANY);
             }
         }
     }

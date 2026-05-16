@@ -2,6 +2,7 @@ package com.todbconverter.extractor;
 
 import com.todbconverter.model.ColumnMetadata;
 import com.todbconverter.model.TableMetadata;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -9,6 +10,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Array;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -16,6 +18,7 @@ import java.util.Map;
 
 public class DataExtractor {
     private static final Logger logger = LoggerFactory.getLogger(DataExtractor.class);
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private final Connection connection;
 
     public DataExtractor(Connection connection) {
@@ -48,12 +51,68 @@ public class DataExtractor {
                         Object value = rs.getObject(column.getColumnName());
                         if (value != null) {
                             String dataType = column.getDataType();
-                            if (dataType != null && (dataType.equals("JSON") || dataType.equals("JSONB"))) {
-                                value = value.toString();
+                            if (dataType != null && (dataType.equalsIgnoreCase("JSON") || dataType.equalsIgnoreCase("JSONB"))) {
+                                // Parse JSON/JSONB to Map for native MongoDB storage
+                                String jsonStr = value.toString();
+                                try {
+                                    value = JSON_MAPPER.readValue(jsonStr, Map.class);
+                                } catch (Exception e) {
+                                    logger.debug("Failed to parse JSON/JSONB column '{}', keeping as string: {}", 
+                                            column.getColumnName(), e.getMessage());
+                                    value = jsonStr;
+                                }
                             } else if (value.getClass().getName().contains("PGobject")) {
-                                value = value.toString();
+                                // Handle PGobject (JSON/JSONB from PostgreSQL)
+                                String pgStr = value.toString();
+                                if (dataType != null && (dataType.equalsIgnoreCase("JSON") || dataType.equalsIgnoreCase("JSONB"))) {
+                                    try {
+                                        value = JSON_MAPPER.readValue(pgStr, Map.class);
+                                    } catch (Exception e) {
+                                        value = pgStr;
+                                    }
+                                } else {
+                                    value = pgStr;
+                                }
+                            } else if (value instanceof Array) {
+                                // Convert SQL Array to Java List
+                                Array sqlArray = (Array) value;
+                                Object arrayElements = sqlArray.getArray();
+                                if (arrayElements instanceof Object[]) {
+                                    value = List.of((Object[]) arrayElements);
+                                } else if (arrayElements instanceof String[]) {
+                                    value = List.of((String[]) arrayElements);
+                                } else if (arrayElements != null) {
+                                    value = arrayElements;
+                                }
                             } else if (value.getClass().getName().contains("PgArray") || (dataType != null && dataType.startsWith("_"))) {
-                                value = value.toString();
+                                // Handle PostgreSQL array types (TEXT[], INTEGER[], etc.)
+                                if (value instanceof Array) {
+                                    Array sqlArray = (Array) value;
+                                    Object arrayElements = sqlArray.getArray();
+                                    if (arrayElements instanceof Object[]) {
+                                        value = List.of((Object[]) arrayElements);
+                                    } else if (arrayElements instanceof String[]) {
+                                        value = List.of((String[]) arrayElements);
+                                    } else if (arrayElements != null) {
+                                        value = arrayElements;
+                                    }
+                                } else {
+                                    // Fallback: try to parse PostgreSQL array string format {a,b,c}
+                                    String arrayStr = value.toString();
+                                    if (arrayStr.startsWith("{") && arrayStr.endsWith("}")) {
+                                        String content = arrayStr.substring(1, arrayStr.length() - 1);
+                                        if (!content.isEmpty()) {
+                                            String[] elements = content.split(",");
+                                            List<String> list = new ArrayList<>();
+                                            for (String elem : elements) {
+                                                list.add(elem.trim());
+                                            }
+                                            value = list;
+                                        } else {
+                                            value = new ArrayList<>();
+                                        }
+                                    }
+                                }
                             }
                         }
                         record.put(column.getColumnName(), value);

@@ -6,6 +6,11 @@ import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.bson.types.ObjectId;
+import org.bson.BsonDateTime;
+import org.bson.BsonBinary;
+import org.bson.types.Decimal128;
+import java.util.Date;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -42,12 +47,7 @@ public class MongoExtractor {
         for (Document doc : collection.find().batchSize(batchSize)) {
             Map<String, Object> record = new HashMap<>();
             for (Map.Entry<String, Object> entry : doc.entrySet()) {
-                Object value = entry.getValue();
-                if (entry.getKey().equals("_id") && value != null) {
-                    record.put(entry.getKey(), value.toString());
-                } else {
-                    record.put(entry.getKey(), value);
-                }
+                record.put(entry.getKey(), convertBsonValue(entry.getValue()));
             }
             batch.add(record);
             
@@ -60,5 +60,47 @@ public class MongoExtractor {
         if (!batch.isEmpty()) {
             batchConsumer.accept(batch);
         }
+    }
+    
+    private Object convertBsonValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof ObjectId) {
+            return value.toString();
+        }
+        if (value instanceof Document) {
+            Document nestedDoc = (Document) value;
+            Map<String, Object> result = new HashMap<>();
+            for (Map.Entry<String, Object> entry : nestedDoc.entrySet()) {
+                result.put(entry.getKey(), convertBsonValue(entry.getValue()));
+            }
+            return result;
+        }
+        if (value instanceof List) {
+            List<?> list = (List<?>) value;
+            List<Object> result = new ArrayList<>();
+            for (Object item : list) {
+                result.add(convertBsonValue(item));
+            }
+            return result;
+        }
+        if (value instanceof BsonDateTime) {
+            return new Date(((BsonDateTime) value).getValue());
+        }
+        if (value instanceof BsonBinary) {
+            return ((BsonBinary) value).getData();
+        }
+        if (value instanceof Decimal128) {
+            return ((Decimal128) value).bigDecimalValue();
+        }
+        if (value instanceof Date) {
+            return value;
+        }
+        if (value instanceof Number || value instanceof String || value instanceof Boolean) {
+            return value;
+        }
+        logger.warn("Unknown BSON type: {}, passing through as-is", value.getClass().getName());
+        return value;
     }
 }

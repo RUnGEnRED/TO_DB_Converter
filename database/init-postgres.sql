@@ -1,22 +1,49 @@
 -- =============================================================================
--- TO DB Converter - Test Database Schema
+-- TO DB Converter - Test Database Schema (Idempotent)
 -- =============================================================================
--- This database is designed to test all edge cases supported by the converter:
--- 1. One-to-Many relationships
--- 2. Many-to-Many relationships
--- 3. Composite primary keys
--- 4. Self-referencing tables
--- 5. Special data types (JSON, BYTEA, ARRAY)
--- 6. Tables with NULL values
--- 7. Case sensitivity (reserved words)
+-- Designed to test ALL converter features:
+--  1:N  = orders -> order_items (classic parent-child)
+--  M:N  = students <-> courses via enrollments (junction table)
+--  M:N  = actors <-> movies via movie_roles (junction table with extra data)
+--  1:1  = employee_details (FK + UNIQUE)
+--  self = employees.manager_id -> employees.employee_id
+--  composite PK = order_versions(order_id, version)
+--  special types = JSONB, TEXT[], BYTEA in documents
+--  NULL handling = projects, project_tasks
+--  reserved words = "user" table with "select", "from" columns
 -- =============================================================================
 
--- =============================================================================
--- SECTION 1: ONE-TO-MANY RELATIONSHIPS (Classic Order System)
--- =============================================================================
--- Demonstrates: parent -> children (1:N), embedded children in MongoDB
+BEGIN;
 
--- Create parent tables first
+-- =============================================================================
+-- DROP all tables (idempotent - allows re-run)
+-- =============================================================================
+DROP TABLE IF EXISTS enrollments      CASCADE;
+DROP TABLE IF EXISTS movie_roles      CASCADE;
+DROP TABLE IF EXISTS order_items      CASCADE;
+DROP TABLE IF EXISTS order_versions   CASCADE;
+DROP TABLE IF EXISTS project_tasks    CASCADE;
+DROP TABLE IF EXISTS employee_details CASCADE;
+DROP TABLE IF EXISTS orders           CASCADE;
+DROP TABLE IF EXISTS projects         CASCADE;
+DROP TABLE IF EXISTS documents        CASCADE;
+DROP TABLE IF EXISTS configuration    CASCADE;
+DROP TABLE IF EXISTS employees        CASCADE;
+DROP TABLE IF EXISTS products         CASCADE;
+DROP TABLE IF EXISTS customers        CASCADE;
+DROP TABLE IF EXISTS courses          CASCADE;
+DROP TABLE IF EXISTS students         CASCADE;
+DROP TABLE IF EXISTS actors           CASCADE;
+DROP TABLE IF EXISTS movies           CASCADE;
+DROP TABLE IF EXISTS user_groups      CASCADE;
+DROP TABLE IF EXISTS "user"           CASCADE;
+
+-- =============================================================================
+-- SECTION 1: ONE-TO-MANY (Classic Order System)
+-- =============================================================================
+-- customers 1──N orders 1──N order_items
+-- products  1──N order_items
+
 CREATE TABLE customers (
     customer_id SERIAL PRIMARY KEY,
     first_name VARCHAR(100) NOT NULL,
@@ -36,30 +63,26 @@ CREATE TABLE products (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Then tables that reference them
 CREATE TABLE orders (
     order_id SERIAL PRIMARY KEY,
-    customer_id INTEGER NOT NULL,
+    customer_id INTEGER NOT NULL REFERENCES customers(customer_id) ON DELETE CASCADE,
     order_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     status VARCHAR(50) DEFAULT 'NEW',
-    total_amount DECIMAL(10, 2),
-    FOREIGN KEY (customer_id) REFERENCES customers(customer_id) ON DELETE CASCADE
+    total_amount DECIMAL(10, 2)
 );
 
 CREATE TABLE order_items (
     item_id SERIAL PRIMARY KEY,
-    order_id INTEGER NOT NULL,
-    product_id INTEGER NOT NULL,
+    order_id INTEGER NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL REFERENCES products(product_id),
     quantity INTEGER NOT NULL CHECK (quantity > 0),
-    unit_price DECIMAL(10, 2) NOT NULL,
-    FOREIGN KEY (order_id) REFERENCES orders(order_id) ON DELETE CASCADE,
-    FOREIGN KEY (product_id) REFERENCES products(product_id)
+    unit_price DECIMAL(10, 2) NOT NULL
 );
 
 -- =============================================================================
--- SECTION 2: MANY-TO-MANY RELATIONSHIPS (Enrollment System)
+-- SECTION 2: MANY-TO-MANY via Junction (Students <-> Courses)
 -- =============================================================================
--- Demonstrates: junction table, embedded references in MongoDB
+-- enrollments = junction table with extra data (grade, enrollment_date)
 
 CREATE TABLE students (
     student_id SERIAL PRIMARY KEY,
@@ -77,21 +100,19 @@ CREATE TABLE courses (
     metadata JSONB
 );
 
--- Junction table (explicit many-to-many)
 CREATE TABLE enrollments (
     enrollment_id SERIAL PRIMARY KEY,
-    student_id INTEGER NOT NULL,
-    course_id INTEGER NOT NULL,
+    student_id INTEGER NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
+    course_id INTEGER NOT NULL REFERENCES courses(course_id) ON DELETE CASCADE,
     enrollment_date DATE DEFAULT CURRENT_DATE,
     grade VARCHAR(2),
-    FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
-    FOREIGN KEY (course_id) REFERENCES courses(course_id) ON DELETE CASCADE,
     UNIQUE(student_id, course_id)
 );
 
 -- =============================================================================
--- SECTION 3: MANY-TO-MANY (Alternative - Actors & Movies)
+-- SECTION 3: MANY-TO-MANY via Junction (Actors <-> Movies)
 -- =============================================================================
+-- movie_roles = junction table with salary + character_name
 
 CREATE TABLE actors (
     actor_id SERIAL PRIMARY KEY,
@@ -112,49 +133,58 @@ CREATE TABLE movies (
 
 CREATE TABLE movie_roles (
     role_id SERIAL PRIMARY KEY,
-    actor_id INTEGER NOT NULL,
-    movie_id INTEGER NOT NULL,
+    actor_id INTEGER NOT NULL REFERENCES actors(actor_id) ON DELETE CASCADE,
+    movie_id INTEGER NOT NULL REFERENCES movies(movie_id) ON DELETE CASCADE,
     character_name VARCHAR(100),
-    salary DECIMAL(12,2),
-    FOREIGN KEY (actor_id) REFERENCES actors(actor_id) ON DELETE CASCADE,
-    FOREIGN KEY (movie_id) REFERENCES movies(movie_id) ON DELETE CASCADE
+    salary DECIMAL(12,2)
 );
 
 -- =============================================================================
--- SECTION 4: COMPOSITE PRIMARY KEY (Order Items with Version)
+-- SECTION 4: COMPOSITE PRIMARY KEY
 -- =============================================================================
--- Demonstrates: table with multiple columns as PRIMARY KEY
+-- order_versions uses (order_id, version) as composite PK
 
 CREATE TABLE order_versions (
     order_id INTEGER NOT NULL,
     version INTEGER NOT NULL,
-    customer_id INTEGER NOT NULL,
+    customer_id INTEGER NOT NULL REFERENCES customers(customer_id),
     modified_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-   notes TEXT,
-    PRIMARY KEY (order_id, version),
-    FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+    notes TEXT,
+    PRIMARY KEY (order_id, version)
 );
 
 -- =============================================================================
--- SECTION 5: SELF-REFERENCING TABLE (Employee Hierarchy)
+-- SECTION 5: SELF-REFERENCING (Employee Hierarchy)
 -- =============================================================================
--- Must be created before tables that reference it
+-- employees.manager_id -> employees.employee_id
 
 CREATE TABLE employees (
     employee_id SERIAL PRIMARY KEY,
     first_name VARCHAR(100) NOT NULL,
     last_name VARCHAR(100) NOT NULL,
     position VARCHAR(100),
-    manager_id INTEGER,
+    manager_id INTEGER REFERENCES employees(employee_id),
     hire_date DATE,
-    salary DECIMAL(10,2),
-    FOREIGN KEY (manager_id) REFERENCES employees(employee_id)
+    salary DECIMAL(10,2)
 );
 
 -- =============================================================================
--- SECTION 6: SPECIAL DATA TYPES
+-- SECTION 6: ONE-TO-ONE (Employee Details)
 -- =============================================================================
--- Demonstrates: JSON, ARRAY, BYTEA handling
+-- employee_details.employee_id has UNIQUE constraint => genuine 1:1
+
+CREATE TABLE employee_details (
+    detail_id SERIAL PRIMARY KEY,
+    employee_id INTEGER NOT NULL UNIQUE REFERENCES employees(employee_id) ON DELETE CASCADE,
+    address TEXT,
+    emergency_contact VARCHAR(100),
+    iban VARCHAR(34)
+);
+
+-- =============================================================================
+-- SECTION 7: SPECIAL DATA TYPES
+-- =============================================================================
+-- Tests JSONB, TEXT[], BYTEA, JSON handling in conversion
 
 CREATE TABLE documents (
     doc_id SERIAL PRIMARY KEY,
@@ -174,8 +204,9 @@ CREATE TABLE configuration (
 );
 
 -- =============================================================================
--- SECTION 7: TABLES WITH NULL VALUES (Testing NULL handling)
+-- SECTION 8: NULL HANDLING
 -- =============================================================================
+-- Most columns nullable to test NULL propagation
 
 CREATE TABLE projects (
     project_id SERIAL PRIMARY KEY,
@@ -189,19 +220,17 @@ CREATE TABLE projects (
 
 CREATE TABLE project_tasks (
     task_id SERIAL PRIMARY KEY,
-    project_id INTEGER NOT NULL,
+    project_id INTEGER NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
     task_name VARCHAR(200) NOT NULL,
-    assignee_id INTEGER,
+    assignee_id INTEGER REFERENCES employees(employee_id),
     due_date DATE,
-    completed_at TIMESTAMP,
-    FOREIGN KEY (project_id) REFERENCES projects(project_id) ON DELETE CASCADE,
-    FOREIGN KEY (assignee_id) REFERENCES employees(employee_id)
+    completed_at TIMESTAMP
 );
 
 -- =============================================================================
--- SECTION 8: RESERVED WORDS (Testing case sensitivity)
+-- SECTION 9: RESERVED WORDS
 -- =============================================================================
--- PostgreSQL reserved words as table/column names
+-- Table/column names that are PostgreSQL reserved words
 
 CREATE TABLE "user" (
     "id" SERIAL PRIMARY KEY,
@@ -218,7 +247,7 @@ CREATE TABLE user_groups (
 );
 
 -- =============================================================================
--- DATA INSERTION - Section 1: Customers & Orders
+-- DATA: customers & products
 -- =============================================================================
 
 INSERT INTO customers (first_name, last_name, email, phone, registration_date, notes) VALUES
@@ -235,6 +264,10 @@ INSERT INTO products (name, description, price, stock_quantity) VALUES
 ('Sony Headphones', 'Noise cancelling', 899.99, 30),
 ('Webcam HD', '720p webcam', 149.99, NULL);
 
+-- =============================================================================
+-- DATA: orders & order_items
+-- =============================================================================
+
 INSERT INTO orders (customer_id, order_date, status, total_amount) VALUES
 (1, '2024-06-10 10:30:00', 'COMPLETED', 3599.98),
 (1, '2024-06-15 14:20:00', 'IN_PROGRESS', 1599.98),
@@ -250,7 +283,7 @@ INSERT INTO order_items (order_id, product_id, quantity, unit_price) VALUES
 (5, 1, 1, 3499.99), (5, 6, 1, 149.99), (5, 2, 2, 99.99);
 
 -- =============================================================================
--- DATA INSERTION - Section 2: Students & Courses (Many-to-Many)
+-- DATA: students, courses & enrollments
 -- =============================================================================
 
 INSERT INTO students (name, email, enrolled_date) VALUES
@@ -272,7 +305,7 @@ INSERT INTO enrollments (student_id, course_id, enrollment_date, grade) VALUES
 (4, 1, '2024-09-04', NULL), (4, 3, '2024-09-04', NULL);
 
 -- =============================================================================
--- DATA INSERTION - Section 3: Actors & Movies (Many-to-Many)
+-- DATA: actors, movies & movie_roles
 -- =============================================================================
 
 INSERT INTO actors (first_name, last_name, birth_date, biography) VALUES
@@ -292,7 +325,7 @@ INSERT INTO movie_roles (actor_id, movie_id, character_name, salary) VALUES
 (3, 4, 'Enchantress', 1500000);
 
 -- =============================================================================
--- DATA INSERTION - Section 4: Composite Primary Key
+-- DATA: order_versions (composite PK)
 -- =============================================================================
 
 INSERT INTO order_versions (order_id, version, customer_id, modified_date, notes) VALUES
@@ -302,7 +335,7 @@ INSERT INTO order_versions (order_id, version, customer_id, modified_date, notes
 (2, 1, 2, '2024-06-12', 'First version');
 
 -- =============================================================================
--- DATA INSERTION - Section 5: Self-Referencing (Employee Hierarchy)
+-- DATA: employees (self-ref) & employee_details (1:1)
 -- =============================================================================
 
 INSERT INTO employees (first_name, last_name, position, manager_id, hire_date, salary) VALUES
@@ -313,8 +346,13 @@ INSERT INTO employees (first_name, last_name, position, manager_id, hire_date, s
 ('Edward', 'Developer', 'Engineer', 3, '2023-06-01', 15000),
 ('Frania', 'Sales', 'Account Manager', 2, '2023-01-15', 12000);
 
+INSERT INTO employee_details (employee_id, address, emergency_contact, iban) VALUES
+(1, '123 Main St', 'Wife', 'PL1234567890'),
+(2, '456 Oak Ave', 'Husband', 'PL9876543210'),
+(3, '789 Pine Rd', NULL, NULL);
+
 -- =============================================================================
--- DATA INSERTION - Section 6: Special Data Types
+-- DATA: documents & configuration (special types)
 -- =============================================================================
 
 INSERT INTO documents (title, content, metadata, tags, signature) VALUES
@@ -329,7 +367,7 @@ INSERT INTO configuration (key_name, value, is_active) VALUES
 ('deprecated_settings', '{"old_key": "value"}', false);
 
 -- =============================================================================
--- DATA INSERTION - Section 7: NULL Handling
+-- DATA: projects & project_tasks (NULL handling)
 -- =============================================================================
 
 INSERT INTO projects (name, description, start_date, end_date, budget, status) VALUES
@@ -347,7 +385,7 @@ INSERT INTO project_tasks (project_id, task_name, assignee_id, due_date, complet
 (4, 'Research', NULL, NULL, NULL);
 
 -- =============================================================================
--- DATA INSERTION - Section 8: Reserved Words (Case Sensitivity)
+-- DATA: reserved words
 -- =============================================================================
 
 INSERT INTO "user" (name, "select", "from") VALUES
@@ -365,43 +403,7 @@ INSERT INTO user_groups (name, is_active) VALUES
 -- SUMMARY
 -- =============================================================================
 
-SELECT '=== DATABASE SUMMARY ===' AS info;
+SELECT '=== DATABASE LOADED ===' AS info;
+SELECT COUNT(*) AS total_tables FROM information_schema.tables WHERE table_schema = 'public';
 
-SELECT 'customers' AS table_name, COUNT(*) AS record_count FROM customers
-UNION ALL SELECT 'products', COUNT(*) FROM products
-UNION ALL SELECT 'orders', COUNT(*) FROM orders
-UNION ALL SELECT 'order_items', COUNT(*) FROM order_items
-UNION ALL SELECT 'students', COUNT(*) FROM students
-UNION ALL SELECT 'courses', COUNT(*) FROM courses
-UNION ALL SELECT 'enrollments', COUNT(*) FROM enrollments
-UNION ALL SELECT 'actors', COUNT(*) FROM actors
-UNION ALL SELECT 'movies', COUNT(*) FROM movies
-UNION ALL SELECT 'movie_roles', COUNT(*) FROM movie_roles
-UNION ALL SELECT 'order_versions', COUNT(*) FROM order_versions
-UNION ALL SELECT 'employees', COUNT(*) FROM employees
-UNION ALL SELECT 'documents', COUNT(*) FROM documents
-UNION ALL SELECT 'configuration', COUNT(*) FROM configuration
-UNION ALL SELECT 'projects', COUNT(*) FROM projects
-UNION ALL SELECT 'project_tasks', COUNT(*) FROM project_tasks
-UNION ALL SELECT '"user"', COUNT(*) FROM "user"
-UNION ALL SELECT 'user_groups', COUNT(*) FROM user_groups;
-
-SELECT '=== RELATIONSHIP TYPES ===' AS info;
-SELECT 
-    'One-to-Many: customers -> orders -> order_items' AS relationship
-UNION ALL 
-SELECT 'One-to-Many: products -> order_items'
-UNION ALL
-SELECT 'Many-to-Many: students <-> courses (via enrollments)'
-UNION ALL
-SELECT 'Many-to-Many: actors <-> movies (via movie_roles)'
-UNION ALL
-SELECT 'Composite PK: order_versions (order_id + version)'
-UNION ALL
-SELECT 'Self-referencing: employees -> employees (manager_id)'
-UNION ALL
-SELECT 'Special types: JSON, BYTEA, ARRAY in documents'
-UNION ALL
-SELECT 'NULL handling: projects, project_tasks'
-UNION ALL
-SELECT 'Reserved words: "user" table with reserved columns';
+COMMIT;

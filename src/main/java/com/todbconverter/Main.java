@@ -1,24 +1,34 @@
 package com.todbconverter;
 
+import com.todbconverter.config.ConfigWizard;
 import com.todbconverter.config.DatabaseConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.util.Properties;
 
 public class Main {
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
 
     public static void main(String[] args) {
+        if (hasFlag(args, "--wizard")) {
+            runWizard();
+            return;
+        }
+
         logger.info("=== TO DB Converter - Start ===");
 
         ConverterService converterService = null;
         try {
-            DatabaseConfig config = new DatabaseConfig("application.properties");
-            
+            DatabaseConfig config = loadConfig();
+
             String direction = parseDirectionArg(args);
             if (direction != null) {
                 logger.info("Overriding conversion direction from CLI: {}", direction);
             }
-            
+
             converterService = new ConverterService(config, direction);
             converterService.convert();
 
@@ -31,6 +41,43 @@ public class Main {
                 converterService.close();
             }
         }
+    }
+
+    private static DatabaseConfig loadConfig() throws Exception {
+        // Try CWD first, then classpath
+        java.io.File cwdFile = new java.io.File("application.properties");
+        if (cwdFile.exists()) {
+            Properties props = new Properties();
+            try (InputStream is = new FileInputStream(cwdFile)) {
+                props.load(is);
+            }
+            return new DatabaseConfig(props);
+        }
+        return new DatabaseConfig("application.properties");
+    }
+
+    private static boolean hasFlag(String[] args, String flag) {
+        for (String arg : args) {
+            if (flag.equals(arg)) return true;
+        }
+        return false;
+    }
+
+    private static void runWizard() {
+        DatabaseConfig config = new DatabaseConfig();
+        try {
+            java.util.Properties props = new java.util.Properties();
+            try (java.io.FileInputStream fis = new java.io.FileInputStream("application.properties")) {
+                props.load(fis);
+            } catch (java.io.IOException e) {
+                // No existing config
+            }
+            config.getProperties().putAll(props);
+        } catch (Exception e) {
+            // Ignore
+        }
+        ConfigWizard wizard = new ConfigWizard(config);
+        wizard.run();
     }
 
     private static String parseDirectionArg(String[] args) {

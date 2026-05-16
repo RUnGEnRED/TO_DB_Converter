@@ -64,6 +64,18 @@
             <version>${slf4j.version}</version>
         </dependency>
 
+        <!-- JLine 3 Terminal UI -->
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-reader</artifactId>
+            <version>3.26.3</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline-terminal-jni</artifactId>
+            <version>3.26.3</version>
+        </dependency>
+
         <!-- Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

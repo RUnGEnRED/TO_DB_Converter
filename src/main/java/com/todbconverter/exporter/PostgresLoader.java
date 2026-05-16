@@ -51,18 +51,24 @@ public class PostgresLoader {
             int columnSize = col.getColumnSize() > 0 ? col.getColumnSize() : DEFAULT_VARCHAR_SIZE;
             if ("VARCHAR".equalsIgnoreCase(dataType)) {
                 sql.append("VARCHAR(").append(columnSize).append(")");
-            } else if ("DECIMAL".equalsIgnoreCase(dataType)) {
-                sql.append("DECIMAL(10, 2)");
+            } else if ("DECIMAL".equalsIgnoreCase(dataType) || "NUMERIC".equalsIgnoreCase(dataType)) {
+                sql.append("DECIMAL");
             } else if (dataType != null && dataType.startsWith("_")) {
                 sql.append("TEXT");
             } else if (dataType != null && (dataType.equalsIgnoreCase("BYTEA") || dataType.equalsIgnoreCase("BLOB"))) {
                 sql.append("BYTEA");
             } else if (dataType != null && (dataType.equalsIgnoreCase("JSON") || dataType.equalsIgnoreCase("JSONB"))) {
                 sql.append("TEXT");
+            } else if (dataType != null && "BIGINT".equalsIgnoreCase(dataType)) {
+                sql.append("BIGINT");
+            } else if (dataType != null && "SMALLINT".equalsIgnoreCase(dataType)) {
+                sql.append("SMALLINT");
+            } else if (dataType != null && "TINYINT".equalsIgnoreCase(dataType)) {
+                sql.append("SMALLINT");
             } else if (dataType != null && dataType.toUpperCase().contains("INT")) {
                 sql.append("INTEGER");
             } else {
-                sql.append(dataType != null ? dataType : "VARCHAR(255)");
+                sql.append(dataType != null ? dataType : "TEXT");
             }
 
             if (col.isPrimaryKey()) {

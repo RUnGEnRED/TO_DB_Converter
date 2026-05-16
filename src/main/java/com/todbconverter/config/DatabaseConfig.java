@@ -129,8 +129,56 @@ public class DatabaseConfig {
         return Boolean.parseBoolean(properties.getProperty("postgres.dropExistingTables", "true"));
     }
 
+    public enum RelationshipStrategy {
+        EMBED, REFERENCE
+    }
+
+    public enum ManyToManyMode {
+        FULL, IDS
+    }
+
     public boolean useReferencingStrategy() {
         return "referencing".equalsIgnoreCase(properties.getProperty("relationship.strategy", "embedding"));
+    }
+
+    public RelationshipStrategy getRelationshipStrategy(String tableName) {
+        String value = properties.getProperty("relationship.strategy." + tableName);
+        if (value == null) {
+            value = properties.getProperty("relationship.strategy.default");
+        }
+        if (value == null) {
+            value = properties.getProperty("relationship.strategy", "EMBED");
+        }
+        try {
+            String upper = value.toUpperCase();
+            if ("REFERENCING".equals(upper)) return RelationshipStrategy.REFERENCE;
+            if ("EMBEDDING".equals(upper)) return RelationshipStrategy.EMBED;
+            return RelationshipStrategy.valueOf(upper);
+        } catch (IllegalArgumentException e) {
+            logger.warn("Invalid relationship strategy '{}' for table '{}', using EMBED", value, tableName);
+            return RelationshipStrategy.EMBED;
+        }
+    }
+
+    public ManyToManyMode getManyToManyMode(String parentTable, String childTable) {
+        String key = "relationship.mn_mode." + parentTable + "_" + childTable;
+        String defaultValue = properties.getProperty("relationship.mn_mode.default", "FULL");
+        String value = properties.getProperty(key, defaultValue);
+        try {
+            return ManyToManyMode.valueOf(value.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            logger.warn("Invalid M:N mode '{}' for {}_{}, using FULL", value, parentTable, childTable);
+            return ManyToManyMode.FULL;
+        }
+    }
+
+    public int getWarnThreshold() {
+        String val = properties.getProperty("relationship.warn_threshold", "1000");
+        try {
+            return Integer.parseInt(val);
+        } catch (NumberFormatException e) {
+            return 1000;
+        }
     }
     
     public boolean useAttributePattern() {
@@ -138,7 +186,11 @@ public class DatabaseConfig {
     }
     
     public int getAttributePatternThreshold() {
-        return Integer.parseInt(properties.getProperty("pattern.attribute.threshold", "3"));
+        try {
+            return Integer.parseInt(properties.getProperty("pattern.attribute.threshold", "2"));
+        } catch (NumberFormatException e) {
+            return 2;
+        }
     }
     
     public boolean useBucketPattern() {
@@ -146,7 +198,11 @@ public class DatabaseConfig {
     }
     
     public int getBucketSize() {
-        return Integer.parseInt(properties.getProperty("pattern.bucket.size", "10"));
+        try {
+            return Integer.parseInt(properties.getProperty("pattern.bucket.size", "10"));
+        } catch (NumberFormatException e) {
+            return 10;
+        }
     }
     
     public boolean useSubsetPattern() {
@@ -154,7 +210,11 @@ public class DatabaseConfig {
     }
     
     public int getSubsetLimit() {
-        return Integer.parseInt(properties.getProperty("pattern.subset.limit", "10"));
+        try {
+            return Integer.parseInt(properties.getProperty("pattern.subset.limit", "10"));
+        } catch (NumberFormatException e) {
+            return 10;
+        }
     }
     
     public boolean useOutlierPattern() {
@@ -162,7 +222,11 @@ public class DatabaseConfig {
     }
     
     public int getOutlierThreshold() {
-        return Integer.parseInt(properties.getProperty("pattern.outlier.threshold", "50"));
+        try {
+            return Integer.parseInt(properties.getProperty("pattern.outlier.threshold", "50"));
+        } catch (NumberFormatException e) {
+            return 50;
+        }
     }
 
     public String getBucketKey() {
@@ -182,7 +246,11 @@ public class DatabaseConfig {
     }
 
     public int getApproximationGranularity() {
-        return Integer.parseInt(properties.getProperty("pattern.approximation.granularity", "100"));
+        try {
+            return Integer.parseInt(properties.getProperty("pattern.approximation.granularity", "100"));
+        } catch (NumberFormatException e) {
+            return 100;
+        }
     }
 
     public String getApproximationFields() {

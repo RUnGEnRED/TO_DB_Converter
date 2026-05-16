@@ -105,11 +105,17 @@ public class ConverterService {
         for (TableMetadata table : tables) {
             String tableName = table.getTableName();
             
+            exporter.clearCollection(tableName);
+            
             // Create indexes on PK and FKs
             List<String> indexFields = new ArrayList<>();
-            indexFields.add(table.getPrimaryKeyColumn());
-            for (com.todbconverter.model.ForeignKeyMetadata fk : table.getForeignKeys()) {
-                indexFields.add(fk.getColumnName());
+            String pkCol = table.getPrimaryKeyColumn();
+            if (pkCol != null) indexFields.add(pkCol);
+            List<com.todbconverter.model.ForeignKeyMetadata> fks = table.getForeignKeys();
+            if (fks != null) {
+                for (com.todbconverter.model.ForeignKeyMetadata fk : fks) {
+                    indexFields.add(fk.getColumnName());
+                }
             }
             exporter.createIndexes(tableName, indexFields);
 

@@ -35,7 +35,7 @@ class MongoDbPatternOptimizerTest {
     @Test
     void testApplyComputedPattern() {
         when(config.useComputedPattern()).thenReturn(true);
-        when(config.getComputedFields()).thenReturn("total_val:SUM(a+b),count_items:COUNT(items)");
+        when(config.getComputedFields()).thenReturn("total_val:SUM(a,b),count_items:COUNT(items)");
         
         List<Map<String, Object>> documents = new ArrayList<>();
         Map<String, Object> doc = new HashMap<>();
@@ -65,7 +65,25 @@ class MongoDbPatternOptimizerTest {
         Map<String, List<Map<String, Object>>> result = optimizer.applyPatterns(documents, "test_table");
         
         Map<String, Object> optimizedDoc = result.get("test_table").get(0);
+        // Now rounds to nearest: 40123 -> 40100 (nearest multiple of 100)
         assertEquals(40100L, optimizedDoc.get("population"));
+    }
+    
+    @Test
+    void testApplyApproximationPatternRounding() {
+        when(config.useApproximationPattern()).thenReturn(true);
+        when(config.getApproximationFields()).thenReturn("population");
+        when(config.getApproximationGranularity()).thenReturn(100);
+        
+        List<Map<String, Object>> documents = new ArrayList<>();
+        Map<String, Object> doc = new HashMap<>();
+        doc.put("population", 40160); // Should round to 40200
+        documents.add(doc);
+        
+        Map<String, List<Map<String, Object>>> result = optimizer.applyPatterns(documents, "test_table");
+        
+        Map<String, Object> optimizedDoc = result.get("test_table").get(0);
+        assertEquals(40200L, optimizedDoc.get("population"));
     }
 
     @Test
@@ -88,7 +106,7 @@ class MongoDbPatternOptimizerTest {
         // Check first bucket
         assertEquals(1, bucketed.get(0).get("customerId"));
         assertEquals(2, bucketed.get(0).get("count"));
-        assertTrue(bucketed.get(0).containsKey("history"));
+        assertTrue(bucketed.get(0).containsKey("data"));
     }
 
     @Test

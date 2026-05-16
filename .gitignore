@@ -47,4 +47,8 @@ buildNumber.properties
 .classpath
 .settings/
 bin/
+
+# Agentic tools
+.agents/
+.opencode/
 docs/mongodb_docs/
