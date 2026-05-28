@@ -22,8 +22,10 @@ import org.slf4j.LoggerFactory;
 import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class ConverterService {
     private static final Logger logger = LoggerFactory.getLogger(ConverterService.class);
@@ -91,12 +93,8 @@ public class ConverterService {
         logger.info("Found {} tables to convert", tables.size());
 
         Map<String, TableMetadata> tablesMap = new HashMap<>();
-        Map<String, List<Map<String, Object>>> allData = new HashMap<>();
-
         for (TableMetadata table : tables) {
             tablesMap.put(table.getTableName(), table);
-            List<Map<String, Object>> data = dataExtractor.extractData(table);
-            allData.put(table.getTableName(), data);
         }
 
         IDataTransformer transformer = new UniversalTransformer(config);
@@ -104,6 +102,17 @@ public class ConverterService {
 
         for (TableMetadata table : tables) {
             String tableName = table.getTableName();
+            
+            // Load only data from tables related to this parent (not all tables)
+            Set<String> relatedNames = findRelatedTableNames(table, tablesMap);
+            Map<String, List<Map<String, Object>>> relatedData = new HashMap<>();
+            for (String relName : relatedNames) {
+                TableMetadata relTable = tablesMap.get(relName);
+                if (relTable != null) {
+                    logger.debug("Loading related data for '{}': {}", tableName, relName);
+                    relatedData.put(relName, dataExtractor.extractData(relTable));
+                }
+            }
             
             exporter.clearCollection(tableName);
             
@@ -121,7 +130,7 @@ public class ConverterService {
 
             dataExtractor.extractDataInBatches(table, 1000, batch -> {
                 List<Map<String, Object>> documents = transformer.transformToDocuments(
-                        table, batch, allData, tablesMap
+                        table, batch, relatedData, tablesMap
                 );
                 
                 Map<String, List<Map<String, Object>>> optimizedCollections = patternOptimizer.applyPatterns(documents, tableName);
@@ -130,7 +139,48 @@ public class ConverterService {
                     exporter.loadDocuments(entry.getKey(), entry.getValue());
                 }
             });
+            
+            relatedData.clear();
         }
+    }
+
+    private Set<String> findRelatedTableNames(TableMetadata parent, Map<String, TableMetadata> allTables) {
+        Set<String> related = new HashSet<>();
+        String parentName = parent.getTableName();
+
+        for (TableMetadata t : allTables.values()) {
+            if (t.getTableName().equals(parentName)) continue;
+
+            List<com.todbconverter.model.ForeignKeyMetadata> fks = t.getForeignKeys();
+            if (fks == null || fks.isEmpty()) continue;
+
+            boolean referencesParent = false;
+            for (com.todbconverter.model.ForeignKeyMetadata fk : fks) {
+                if (fk.getReferencedTable().equals(parentName)) {
+                    related.add(t.getTableName());
+                    referencesParent = true;
+                    break;
+                }
+            }
+
+            if (referencesParent) {
+                for (com.todbconverter.model.ForeignKeyMetadata fk : fks) {
+                    if (!fk.getReferencedTable().equals(parentName)) {
+                        related.add(fk.getReferencedTable());
+                    }
+                }
+            }
+        }
+
+        List<com.todbconverter.model.ForeignKeyMetadata> parentFks = parent.getForeignKeys();
+        if (parentFks != null) {
+            for (com.todbconverter.model.ForeignKeyMetadata fk : parentFks) {
+                related.add(fk.getReferencedTable());
+            }
+        }
+
+        related.remove(parentName);
+        return related;
     }
 
     private void convertMongoToPostgres() throws Exception {
