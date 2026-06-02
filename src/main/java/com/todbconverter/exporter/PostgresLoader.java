@@ -98,9 +98,10 @@ public class PostgresLoader {
         String tableName = table.getTableName();
         
         for (ForeignKeyMetadata fk : table.getForeignKeys()) {
-            String sql = String.format("ALTER TABLE %s.%s ADD CONSTRAINT fk_%s_%s FOREIGN KEY (%s) REFERENCES %s.%s(%s);",
+            String constraintName = "fk_" + tableName + "_" + fk.getColumnName();
+            String sql = String.format("ALTER TABLE %s.%s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s.%s(%s);",
                     escapeIdentifier(schema), escapeIdentifier(tableName),
-                    tableName, fk.getColumnName(),
+                    escapeIdentifier(constraintName),
                     escapeIdentifier(fk.getColumnName()),
                     escapeIdentifier(schema), escapeIdentifier(fk.getReferencedTable()), escapeIdentifier(fk.getReferencedColumn()));
             

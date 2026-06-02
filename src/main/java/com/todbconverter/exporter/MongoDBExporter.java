@@ -150,8 +150,8 @@ public class MongoDBExporter implements IDocumentLoader {
 
     @Override
     public void clearCollection(String collectionName) {
-        MongoCollection<Document> collection = database.getCollection(collectionName);
-        collection.deleteMany(new Document());
+        database.getCollection(collectionName).drop();
+        database.createCollection(collectionName);
         logger.info("Cleared collection: {}", collectionName);
     }
 }

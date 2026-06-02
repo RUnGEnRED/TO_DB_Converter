@@ -46,7 +46,7 @@ public class MongoToSqlEdgeCaseTest {
         for (Map<String, Object> row : tableData) {
             Object id = row.get("id");
             assertNotNull(id, "ID should never be null");
-            if (id.equals(100)) found100 = true;
+            if ("100".equals(id)) found100 = true;
             if (id instanceof String && ((String)id).length() > 20) foundGenerated = true;
         }
         

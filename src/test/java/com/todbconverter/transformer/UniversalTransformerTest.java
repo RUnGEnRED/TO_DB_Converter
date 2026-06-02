@@ -45,14 +45,14 @@ class UniversalTransformerTest {
         
         List<Map<String, Object>> parentRows = relational.get("parent");
         assertEquals(1, parentRows.size());
-        assertEquals(1, parentRows.get(0).get("id"));
+        assertEquals("1", parentRows.get(0).get("id"));
         assertEquals("Test Document", parentRows.get(0).get("name"));
         
         List<Map<String, Object>> childRows = relational.get("children");
         assertEquals(1, childRows.size());
         assertEquals("A1", childRows.get(0).get("child_id"));
         assertEquals(100, childRows.get(0).get("value"));
-        assertEquals(1, childRows.get(0).get("parent_id"));
+        assertEquals("1", childRows.get(0).get("parent_id"));
     }
 
     @Test
@@ -128,7 +128,7 @@ class UniversalTransformerTest {
         assertEquals(2, relational.get("comments").size());
         
         List<Map<String, Object>> commentRows = relational.get("comments");
-        assertEquals(1, commentRows.get(0).get("posts_id"));
+        assertEquals("1", commentRows.get(0).get("posts_id"));
         assertEquals("Alice", commentRows.get(0).get("author"));
         assertEquals("Bob", commentRows.get(1).get("author"));
     }

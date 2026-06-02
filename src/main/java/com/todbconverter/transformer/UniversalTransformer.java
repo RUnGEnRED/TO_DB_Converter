@@ -514,13 +514,11 @@ public class UniversalTransformer implements IDataTransformer {
         for (Map<String, Object> doc : documents) {
             Map<String, Object> flatParent = new HashMap<>();
             
-            Object parentId = doc.get("id");
-            if (parentId == null) parentId = doc.get("_id");
-            if (parentId == null) parentId = UUID.randomUUID().toString();
+            Object parentIdRaw = doc.get("id");
+            if (parentIdRaw == null) parentIdRaw = doc.get("_id");
+            String parentId = parentIdRaw != null ? parentIdRaw.toString() : UUID.randomUUID().toString();
             
-            // Normalize ID to String for consistent de-duplication
-            String idStr = parentId.toString();
-            boolean alreadyProcessed = processedIds.computeIfAbsent(parentTableName, k -> new HashSet<>()).contains(idStr);
+            boolean alreadyProcessed = processedIds.computeIfAbsent(parentTableName, k -> new HashSet<>()).contains(parentId);
 
             if (!alreadyProcessed) {
                 ColumnMetadata idCol = new ColumnMetadata();
@@ -662,7 +660,7 @@ public class UniversalTransformer implements IDataTransformer {
             }
             if (!alreadyProcessed) {
                 relationalData.get(parentTableName).add(flatParent);
-                processedIds.get(parentTableName).add(idStr);
+                processedIds.get(parentTableName).add(parentId);
             }
         }
 
