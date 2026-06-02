@@ -2,20 +2,18 @@ package com.todbconverter;
 
 import com.mongodb.client.MongoDatabase;
 import com.todbconverter.config.DatabaseConfig;
-import com.todbconverter.connection.IDatabaseConnector;
 import com.todbconverter.connection.IMongoDBConnector;
 import com.todbconverter.connection.IPostgreSQLConnector;
 import com.todbconverter.extractor.DataExtractor;
 import com.todbconverter.extractor.IMetadataExtractor;
 import com.todbconverter.extractor.MetadataExtractor;
 import com.todbconverter.extractor.MongoExtractor;
-import com.todbconverter.exporter.IDocumentLoader;
 import com.todbconverter.exporter.MongoDBExporter;
 import com.todbconverter.exporter.PostgresLoader;
 import com.todbconverter.model.TableMetadata;
-import com.todbconverter.transformer.UniversalTransformer;
-import com.todbconverter.transformer.IDataTransformer;
+import com.todbconverter.transformer.DocumentToRelationalTransformer;
 import com.todbconverter.transformer.MongoDbPatternOptimizer;
+import com.todbconverter.transformer.RelationalToDocumentTransformer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,31 +39,35 @@ public class ConverterService {
     }
 
     public ConverterService(DatabaseConfig config, String cliDirection) {
+        this(config, cliDirection,
+                new com.todbconverter.connection.PostgreSQLConnection(
+                        config.getPostgresHost(), config.getPostgresPort(),
+                        config.getPostgresDatabase(), config.getPostgresUsername(),
+                        config.getPostgresPassword()),
+                createMongoConnection(config),
+                new MongoDbPatternOptimizer(config));
+    }
+
+    public ConverterService(DatabaseConfig config, String cliDirection,
+                            IPostgreSQLConnector postgresConnection,
+                            IMongoDBConnector mongoConnection,
+                            MongoDbPatternOptimizer patternOptimizer) {
         this.config = config;
         this.direction = config.overrideDirection(cliDirection);
-        
-        this.postgresConnection = new com.todbconverter.connection.PostgreSQLConnection(
-                config.getPostgresHost(),
-                config.getPostgresPort(),
-                config.getPostgresDatabase(),
-                config.getPostgresUsername(),
-                config.getPostgresPassword()
-        );
+        this.postgresConnection = postgresConnection;
+        this.mongoConnection = mongoConnection;
+        this.patternOptimizer = patternOptimizer;
+    }
 
+    private static IMongoDBConnector createMongoConnection(DatabaseConfig config) {
         String mongoConnStr = config.getMongoConnectionString();
         if (mongoConnStr != null && !mongoConnStr.isEmpty()) {
-            this.mongoConnection = new com.todbconverter.connection.MongoDBConnection(mongoConnStr, config.getMongoDatabase());
-        } else {
-            this.mongoConnection = new com.todbconverter.connection.MongoDBConnection(
-                    config.getMongoHost(),
-                    config.getMongoPort(),
-                    config.getMongoDatabase(),
-                    config.getMongoUsername(),
-                    config.getMongoPassword()
-            );
+            return new com.todbconverter.connection.MongoDBConnection(mongoConnStr, config.getMongoDatabase());
         }
-        
-        this.patternOptimizer = new MongoDbPatternOptimizer(config);
+        return new com.todbconverter.connection.MongoDBConnection(
+                config.getMongoHost(), config.getMongoPort(),
+                config.getMongoDatabase(), config.getMongoUsername(),
+                config.getMongoPassword());
     }
 
     public void convert() throws Exception {
@@ -84,7 +86,7 @@ public class ConverterService {
 
     private void convertPostgresToMongo() throws Exception {
         logger.info("Direction: POSTGRES -> MONGO");
-        
+
         Connection sqlConnection = postgresConnection.getConnection();
         IMetadataExtractor metadataExtractor = new MetadataExtractor(sqlConnection);
         DataExtractor dataExtractor = new DataExtractor(sqlConnection);
@@ -97,13 +99,12 @@ public class ConverterService {
             tablesMap.put(table.getTableName(), table);
         }
 
-        IDataTransformer transformer = new UniversalTransformer(config);
+        RelationalToDocumentTransformer transformer = new RelationalToDocumentTransformer(config);
         MongoDBExporter exporter = new MongoDBExporter(mongoConnection.getDatabase());
 
         for (TableMetadata table : tables) {
             String tableName = table.getTableName();
-            
-            // Load only data from tables related to this parent (not all tables)
+
             Set<String> relatedNames = findRelatedTableNames(table, tablesMap);
             Map<String, List<Map<String, Object>>> relatedData = new HashMap<>();
             for (String relName : relatedNames) {
@@ -113,10 +114,9 @@ public class ConverterService {
                     relatedData.put(relName, dataExtractor.extractData(relTable));
                 }
             }
-            
+
             exporter.clearCollection(tableName);
-            
-            // Create indexes on PK and FKs
+
             List<String> indexFields = new ArrayList<>();
             String pkCol = table.getPrimaryKeyColumn();
             if (pkCol != null) indexFields.add(pkCol);
@@ -132,14 +132,14 @@ public class ConverterService {
                 List<Map<String, Object>> documents = transformer.transformToDocuments(
                         table, batch, relatedData, tablesMap
                 );
-                
+
                 Map<String, List<Map<String, Object>>> optimizedCollections = patternOptimizer.applyPatterns(documents, tableName);
 
                 for (Map.Entry<String, List<Map<String, Object>>> entry : optimizedCollections.entrySet()) {
                     exporter.loadDocuments(entry.getKey(), entry.getValue());
                 }
             });
-            
+
             relatedData.clear();
         }
     }
@@ -185,14 +185,14 @@ public class ConverterService {
 
     private void convertMongoToPostgres() throws Exception {
         logger.info("Direction: MONGO -> POSTGRES");
-        
+
         MongoDatabase mongoDb = mongoConnection.getDatabase();
         MongoExtractor mongoExtractor = new MongoExtractor(mongoDb);
 
         Connection sqlConnection = postgresConnection.getConnection();
         boolean dropTables = config.shouldDropExistingTables();
         PostgresLoader sqlLoader = new PostgresLoader(sqlConnection, dropTables);
-        UniversalTransformer transformer = new UniversalTransformer(config);
+        DocumentToRelationalTransformer transformer = new DocumentToRelationalTransformer(config);
 
         List<String> collections = mongoExtractor.listCollections();
         Map<String, TableMetadata> tablesMetadata = new HashMap<>();
@@ -217,9 +217,9 @@ public class ConverterService {
         for (String collectionName : collections) {
             mongoExtractor.extractDocumentsInBatches(collectionName, 1000, batch -> {
                 try {
-                    Map<String, List<Map<String, Object>>> relationalData = 
+                    Map<String, List<Map<String, Object>>> relationalData =
                         transformer.flattenToRelational(collectionName, batch, tablesMetadata);
-                    
+
                     for (Map.Entry<String, List<Map<String, Object>>> entry : relationalData.entrySet()) {
                         sqlLoader.loadData(tablesMetadata.get(entry.getKey()), entry.getValue());
                     }
@@ -235,7 +235,7 @@ public class ConverterService {
             try {
                 sqlLoader.addForeignKeys(table);
             } catch (java.sql.SQLException e) {
-                logger.warn("Failed to add some foreign keys for {}: {}. This is common in schema-less to relational conversion.", 
+                logger.warn("Failed to add some foreign keys for {}: {}. This is common in schema-less to relational conversion.",
                         table.getTableName(), e.getMessage());
             }
         }
