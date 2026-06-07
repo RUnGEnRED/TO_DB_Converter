@@ -49,9 +49,14 @@ buildNumber.properties
 .settings/
 bin/
 
+# Documentation
+docs/**
+!docs/DOKUMENTACJA.md
+
+# Temporary
+temp/
+logs/
+
 # Agentic tools
 .agents/
 .opencode/
-docs/
-logs/
-temp/

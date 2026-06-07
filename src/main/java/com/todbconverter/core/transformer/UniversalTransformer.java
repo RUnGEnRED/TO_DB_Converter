@@ -30,10 +30,13 @@ public class UniversalTransformer {
         this.maxChildrenPerParent = config.getMaxChildrenPerParent();
 
         // Initialize pattern appliers
+        // Order matters: Approximation runs last so it can also round any
+        // numeric values that Computed inserted into the document.
         this.patternAppliers = List.of(
                 new AttributePattern(),
                 new ComputedPattern(),
-                new SubsetPattern()
+                new SubsetPattern(),
+                new ApproximationPattern()
         );
     }
 
@@ -473,6 +476,13 @@ public class UniversalTransformer {
                         context.put("fkColumn", childFkCol);
                     }
                 }
+            }
+            case "approximation" -> {
+                // Format: <field1>:<gran1>,<field2>:<gran2>
+                // Validation of granularity values happens inside the applier
+                // (zero/negative entries are silently ignored, mirroring
+                // AttributePattern's tolerance for malformed mappings).
+                context.put("fields", patternConfig);
             }
         }
 

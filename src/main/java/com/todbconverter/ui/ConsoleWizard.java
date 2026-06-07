@@ -356,9 +356,9 @@ public class ConsoleWizard {
         List<String> tables = graph.getTables().stream().map(TableMetadata::getName).toList();
         if (tables.isEmpty()) return;
 
-        String[] keys = {"attribute", "computed", "subset"};
-        String[] labels = {"Attr", "Comp", "Subs"};
-        String[] descs = {"Group fields into key-value array", "Pre-calculate COUNT/SUM", "Embed recent N records"};
+        String[] keys = {"attribute", "computed", "subset", "approximation"};
+        String[] labels = {"Attr", "Comp", "Subs", "Appr"};
+        String[] descs = {"Group fields into key-value array", "Pre-calculate COUNT/SUM", "Embed recent N records", "Round numeric values to granularity"};
         boolean[][] enabled = new boolean[tables.size()][keys.length];
         for (int t = 0; t < tables.size(); t++) for (int p = 0; p < keys.length; p++) enabled[t][p] = config.getPatternConfig(tables.get(t)).containsKey(keys[p]);
 
@@ -381,6 +381,7 @@ public class ConsoleWizard {
                 terminal.writer().println(ansi("  @|bold,g Attr|@ = " + descs[0]));
                 terminal.writer().println(ansi("  @|bold,c Comp|@ = " + descs[1]));
                 terminal.writer().println(ansi("  @|bold,m Subs|@ = " + descs[2]));
+                terminal.writer().println(ansi("  @|bold,y Appr|@ = " + descs[3]));
                 terminal.writer().println();
                 StringBuilder h = new StringBuilder("  ");
                 h.append(String.format("%-20s", "Table"));
@@ -475,6 +476,17 @@ public class ConsoleWizard {
                     if (val.isEmpty()) return val;
                     if (!val.contains("=")) terminal.writer().println(ansi("@|yellow Must use format: childTable=limit|@"));
                 } while (!val.contains("="));
+                return val;
+            }
+            case "approximation" -> {
+                do {
+                    terminal.writer().println(ansi("@|bold Approximation for " + table + "|@"));
+                    terminal.writer().println(ansi("@|faint Format: field1:gran1,field2:gran2|@"));
+                    terminal.writer().println(ansi("@|faint Example: population:100,visits:1000|@"));
+                    val = readLine("  Config", "");
+                    if (val.isEmpty()) return val;
+                    if (!val.contains(":")) terminal.writer().println(ansi("@|yellow Must use format: field:granularity,field:granularity|@"));
+                } while (!val.contains(":"));
                 return val;
             }
         }
