@@ -1,71 +1,105 @@
 package com.todbconverter.connection;
 
+import com.mongodb.ConnectionString;
+import com.mongodb.MongoClientSettings;
 import com.mongodb.client.MongoClient;
 import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoDatabase;
+import com.todbconverter.config.DatabaseConfig;
 import com.todbconverter.exception.ConnectionException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.todbconverter.exception.TargetConnectionException;
 
-public class MongoDBConnection implements IDatabaseConnector, IMongoDBConnector {
-    private static final Logger logger = LoggerFactory.getLogger(MongoDBConnection.class);
+import java.util.concurrent.TimeUnit;
 
-    private final String connectionString;
-    private final String databaseName;
-    private MongoClient mongoClient;
+/**
+ * MongoDB connection using the official sync driver.
+ */
+public class MongoDBConnection implements IDatabaseConnector {
+
+    private MongoClient client;
     private MongoDatabase database;
+    private String databaseName;
 
-    public MongoDBConnection(String host, int port, String databaseName, String username, String password) {
-        if (username != null && !username.isEmpty() && password != null && !password.isEmpty()) {
-            this.connectionString = String.format("mongodb://%s:%s@%s:%d", username, password, host, port);
-        } else {
-            this.connectionString = String.format("mongodb://%s:%d", host, port);
+    @Override
+    public void connect(DatabaseConfig config) throws ConnectionException {
+        String uri = config.getTargetMongoUri();
+        databaseName = config.getTargetDatabase();
+
+        if (uri == null || uri.isBlank()) {
+            throw new TargetConnectionException("MongoDB URI is required");
         }
-        this.databaseName = databaseName;
-    }
 
-    public MongoDBConnection(String connectionString, String databaseName) {
-        this.connectionString = connectionString;
-        this.databaseName = databaseName;
-    }
-
-    public MongoDatabase getDatabase() throws ConnectionException {
-        if (mongoClient == null) {
-            connect();
+        if (databaseName == null || databaseName.isBlank()) {
+            throw new TargetConnectionException("MongoDB database name is required");
         }
-        return database;
+
+        try {
+            ConnectionString connectionString = new ConnectionString(uri);
+
+            MongoClientSettings settings = MongoClientSettings.builder()
+                    .applyConnectionString(connectionString)
+                    .applyToSocketSettings(builder ->
+                            builder.connectTimeout(5, TimeUnit.SECONDS)
+                                    .readTimeout(5, TimeUnit.SECONDS))
+                    .applyToClusterSettings(builder ->
+                            builder.serverSelectionTimeout(5, TimeUnit.SECONDS))
+                    .build();
+
+            this.client = MongoClients.create(settings);
+            this.database = client.getDatabase(databaseName);
+        } catch (Exception e) {
+            throw new TargetConnectionException(
+                    "Failed to connect to MongoDB: " + e.getMessage(), e);
+        }
     }
 
     @Override
-    public void connect() throws ConnectionException {
-        if (mongoClient == null) {
-            try {
-                logger.info("Connecting to MongoDB: {}", connectionString.replaceAll("://.*@", "://*****@"));
-                mongoClient = MongoClients.create(connectionString);
-                database = mongoClient.getDatabase(databaseName);
-                logger.info("Successfully connected to MongoDB database: {}", databaseName);
-            } catch (Exception e) {
-                logger.error("Target database connection failed", e);
-                throw new ConnectionException("Target database connection failed", e);
-            }
+    public boolean testConnection() throws ConnectionException {
+        if (client == null || database == null) {
+            throw new TargetConnectionException("Not connected. Call connect() first.");
+        }
+
+        try {
+            // Simple command to test connection
+            database.runCommand(new org.bson.Document("ping", 1));
+            return true;
+        } catch (Exception e) {
+            throw new TargetConnectionException(
+                    "MongoDB connection test failed: " + e.getMessage(), e);
         }
     }
 
     @Override
     public boolean isConnected() {
-        try {
-            return mongoClient != null && mongoClient.getDatabase(databaseName) != null;
-        } catch (Exception e) {
-            logger.error("Error checking MongoDB connection status", e);
-            return false;
+        return client != null && database != null;
+    }
+
+    /**
+     * Get the MongoDB database instance.
+     */
+    public MongoDatabase getDatabase() {
+        return database;
+    }
+
+    /**
+     * Get a collection by name.
+     */
+    public com.mongodb.client.MongoCollection<org.bson.Document> getCollection(String collectionName) {
+        if (database == null) {
+            throw new IllegalStateException("Not connected");
         }
+        return database.getCollection(collectionName);
     }
 
     @Override
-    public void disconnect() {
-        if (mongoClient != null) {
-            mongoClient.close();
-            logger.info("MongoDB connection closed");
+    public void close() throws ConnectionException {
+        if (client != null) {
+            try {
+                client.close();
+            } catch (Exception e) {
+                throw new TargetConnectionException(
+                        "Error closing MongoDB connection: " + e.getMessage(), e);
+            }
         }
     }
 }

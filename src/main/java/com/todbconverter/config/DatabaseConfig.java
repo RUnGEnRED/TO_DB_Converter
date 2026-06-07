@@ -1,273 +1,245 @@
 package com.todbconverter.config;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.todbconverter.core.model.Strategy;
+import com.todbconverter.exception.ConfigException;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.Properties;
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.*;
 
+/**
+ * Configuration for database connections and conversion strategies.
+ */
 public class DatabaseConfig {
-    private static final Logger logger = LoggerFactory.getLogger(DatabaseConfig.class);
-    private static final String VALID_SCHEMA_PATTERN = "^[a-zA-Z_][a-zA-Z0-9_]*$";
-    private static final String VALID_QUOTED_SCHEMA_PATTERN = "^\"[^\"]+\"$";
-    
-    private boolean isValidSchemaName(String schema) {
-        return schema.matches(VALID_SCHEMA_PATTERN) || schema.matches(VALID_QUOTED_SCHEMA_PATTERN);
-    }
-    
-    private final Properties properties;
-    
+
+    // Source Database
+    private String sourceJdbcUrl;
+    private String sourceUsername;
+    private String sourcePassword;
+    private String sourceDriver;
+
+    // Target MongoDB
+    private String targetMongoUri;
+    private String targetDatabase;
+
+    // Relationship Strategies (edge-based)
+    private final Map<String, Strategy> relationshipStrategies = new HashMap<>();
+    private Strategy defaultStrategy = Strategy.EMBED;
+
+    // Design Patterns (simplified - stored as string configs)
+    private final Map<String, Map<String, String>> patterns = new HashMap<>();
+
+    // Safeguards
+    private int maxChildrenPerParent = 1000;
+
     public DatabaseConfig() {
-        this.properties = new Properties();
     }
 
-    public DatabaseConfig(Properties properties) {
-        this.properties = properties;
+    // === Getters and Setters ===
+
+    public String getSourceJdbcUrl() { return sourceJdbcUrl; }
+    public void setSourceJdbcUrl(String sourceJdbcUrl) { this.sourceJdbcUrl = sourceJdbcUrl; }
+
+    public String getSourceUsername() { return sourceUsername; }
+    public void setSourceUsername(String sourceUsername) { this.sourceUsername = sourceUsername; }
+
+    public String getSourcePassword() { return sourcePassword; }
+    public void setSourcePassword(String sourcePassword) { this.sourcePassword = sourcePassword; }
+
+    public String getSourceDriver() { return sourceDriver; }
+    public void setSourceDriver(String sourceDriver) { this.sourceDriver = sourceDriver; }
+
+    public String getTargetMongoUri() { return targetMongoUri; }
+    public void setTargetMongoUri(String targetMongoUri) { this.targetMongoUri = targetMongoUri; }
+
+    public String getTargetDatabase() { return targetDatabase; }
+    public void setTargetDatabase(String targetDatabase) { this.targetDatabase = targetDatabase; }
+
+    public Strategy getDefaultStrategy() { return defaultStrategy; }
+    public void setDefaultStrategy(Strategy defaultStrategy) { this.defaultStrategy = defaultStrategy; }
+
+    public int getMaxChildrenPerParent() { return maxChildrenPerParent; }
+    public void setMaxChildrenPerParent(int maxChildrenPerParent) { this.maxChildrenPerParent = maxChildrenPerParent; }
+
+    // === Strategy Methods ===
+
+    /**
+     * Get strategy for a specific edge (fkTableName = child, pkTableName = parent).
+     */
+    public Strategy getStrategy(String fkTableName, String pkTableName) {
+        String key1 = fkTableName + "." + pkTableName;
+        if (relationshipStrategies.containsKey(key1)) {
+            return relationshipStrategies.get(key1);
+        }
+        String key2 = pkTableName + "." + fkTableName;
+        return relationshipStrategies.getOrDefault(key2, defaultStrategy);
     }
 
-    public DatabaseConfig(String configFile) throws IOException {
-        this();
-        try (InputStream input = getClass().getClassLoader().getResourceAsStream(configFile)) {
-            if (input == null) {
-                throw new IOException("Unable to find " + configFile);
+    /**
+     * Set strategy for a specific edge.
+     */
+    public void setStrategy(String fkTableName, String pkTableName, Strategy strategy) {
+        String key = fkTableName + "." + pkTableName;
+        relationshipStrategies.put(key, strategy);
+    }
+
+    /**
+     * Get all configured strategies.
+     */
+    public Map<String, Strategy> getRelationshipStrategies() {
+        return Collections.unmodifiableMap(relationshipStrategies);
+    }
+
+    // === Pattern Methods ===
+
+    /**
+     * Get pattern configuration for a table.
+     */
+    public Map<String, String> getPatternConfig(String tableName) {
+        Map<String, String> m = patterns.get(tableName);
+        return m == null ? Collections.emptyMap() : Collections.unmodifiableMap(m);
+    }
+
+    /**
+     * Set pattern configuration for a table.
+     */
+    public void setPatternConfig(String tableName, String patternType, String config) {
+        patterns.computeIfAbsent(tableName, k -> new HashMap<>()).put(patternType, config);
+    }
+
+    /**
+     * Remove pattern configuration for a table.
+     */
+    public void removePatternConfig(String tableName, String patternType) {
+        Map<String, String> m = patterns.get(tableName);
+        if (m != null) { m.remove(patternType); if (m.isEmpty()) patterns.remove(tableName); }
+    }
+
+    // === I/O Methods ===
+
+    /**
+     * Load configuration from a properties file.
+     */
+    public static DatabaseConfig loadFromFile(String filePath) throws ConfigException {
+        DatabaseConfig config = new DatabaseConfig();
+        Path path = Paths.get(filePath);
+
+        if (!Files.exists(path)) {
+            throw new ConfigException("Configuration file not found: " + filePath);
+        }
+
+        Properties props = new Properties();
+        try (InputStream input = Files.newInputStream(path)) {
+            props.load(input);
+        } catch (IOException e) {
+            throw new ConfigException("Failed to read configuration file: " + filePath, e);
+        }
+
+        // Source Database
+        config.sourceJdbcUrl = props.getProperty("source.jdbc.url");
+        config.sourceUsername = props.getProperty("source.jdbc.username");
+        config.sourcePassword = props.getProperty("source.jdbc.password");
+        config.sourceDriver = props.getProperty("source.jdbc.driver");
+
+        // Target MongoDB
+        config.targetMongoUri = props.getProperty("target.mongodb.uri");
+        config.targetDatabase = props.getProperty("target.mongodb.database");
+
+        // Default strategy
+        String defaultStrategyStr = props.getProperty("relationship.strategy.default", "EMBED");
+        config.defaultStrategy = Strategy.valueOf(defaultStrategyStr.toUpperCase());
+
+        // Edge strategies
+        for (String key : props.stringPropertyNames()) {
+            if (key.startsWith("relationship.strategy.") && !key.equals("relationship.strategy.default")) {
+                String edge = key.substring("relationship.strategy.".length());
+                Strategy strategy = Strategy.valueOf(props.getProperty(key).toUpperCase());
+                config.relationshipStrategies.put(edge, strategy);
             }
-            properties.load(input);
         }
-    }
-    
-    public Properties getProperties() {
-        return properties;
-    }
 
-    public String getPostgresHost() {
-        return properties.getProperty("postgres.host", "localhost");
-    }
-
-    public int getPostgresPort() {
-        String portStr = properties.getProperty("postgres.port", "5432");
-        try {
-            int port = Integer.parseInt(portStr);
-            if (port <= 0 || port > 65535) {
-                throw new IllegalArgumentException("Invalid PostgreSQL port: " + portStr);
+        // Patterns
+        for (String key : props.stringPropertyNames()) {
+            if (key.startsWith("pattern.")) {
+                String[] parts = key.substring("pattern.".length()).split("\\.", 2);
+                if (parts.length == 2) {
+                    String patternType = parts[0];
+                    String tableName = parts[1];
+                    String value = props.getProperty(key);
+                    config.patterns.computeIfAbsent(tableName, k -> new HashMap<>())
+                            .put(patternType, value);
+                }
             }
-            return port;
-        } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("Invalid PostgreSQL port: " + portStr);
         }
-    }
 
-    public String getPostgresDatabase() {
-        return properties.getProperty("postgres.database");
-    }
-
-    public String getPostgresUsername() {
-        return properties.getProperty("postgres.username");
-    }
-
-    public String getPostgresPassword() {
-        return properties.getProperty("postgres.password");
-    }
-
-    public String getPostgresSchema() {
-        String schema = properties.getProperty("postgres.schema", "public");
-        if (!isValidSchemaName(schema)) {
-            logger.warn("Invalid schema name '{}' - using 'public' instead", schema);
-            return "public";
+        // Safeguards
+        String maxChildren = props.getProperty("safeguard.max_children_per_parent");
+        if (maxChildren != null) {
+            config.maxChildrenPerParent = Integer.parseInt(maxChildren);
         }
-        return schema;
+
+        return config;
     }
 
-    public String getMongoHost() {
-        return properties.getProperty("mongo.host", "localhost");
-    }
+    /**
+     * Save configuration to a properties file.
+     */
+    public void saveToFile(String filePath) throws ConfigException {
+        Properties props = new Properties();
 
-    public int getMongoPort() {
-        String portStr = properties.getProperty("mongo.port", "27017");
-        try {
-            int port = Integer.parseInt(portStr);
-            if (port <= 0 || port > 65535) {
-                throw new IllegalArgumentException("Invalid MongoDB port: " + portStr);
+        // Source Database
+        if (sourceJdbcUrl != null) props.setProperty("source.jdbc.url", sourceJdbcUrl);
+        if (sourceUsername != null) props.setProperty("source.jdbc.username", sourceUsername);
+        if (sourcePassword != null) props.setProperty("source.jdbc.password", sourcePassword);
+        if (sourceDriver != null) props.setProperty("source.jdbc.driver", sourceDriver);
+
+        // Target MongoDB
+        if (targetMongoUri != null) props.setProperty("target.mongodb.uri", targetMongoUri);
+        if (targetDatabase != null) props.setProperty("target.mongodb.database", targetDatabase);
+
+        // Default strategy
+        props.setProperty("relationship.strategy.default", defaultStrategy.name());
+
+        // Edge strategies
+        for (Map.Entry<String, Strategy> entry : relationshipStrategies.entrySet()) {
+            props.setProperty("relationship.strategy." + entry.getKey(), entry.getValue().name());
+        }
+
+        // Patterns
+        for (Map.Entry<String, Map<String, String>> tableEntry : patterns.entrySet()) {
+            for (Map.Entry<String, String> patternEntry : tableEntry.getValue().entrySet()) {
+                props.setProperty("pattern." + patternEntry.getKey() + "." + tableEntry.getKey(),
+                        patternEntry.getValue());
             }
-            return port;
-        } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("Invalid MongoDB port: " + portStr);
+        }
+
+        // Safeguards
+        props.setProperty("safeguard.max_children_per_parent", String.valueOf(maxChildrenPerParent));
+
+        try (OutputStream output = Files.newOutputStream(Paths.get(filePath))) {
+            props.store(output, "TO_DB Converter Configuration");
+        } catch (IOException e) {
+            throw new ConfigException("Failed to write configuration file: " + filePath, e);
         }
     }
 
-    public String getMongoDatabase() {
-        return properties.getProperty("mongo.database");
+    /**
+     * Create a default configuration.
+     */
+    public static DatabaseConfig defaults() {
+        return new DatabaseConfig();
     }
 
-    public String getMongoUsername() {
-        return properties.getProperty("mongo.username");
-    }
-
-    public String getMongoPassword() {
-        return properties.getProperty("mongo.password");
-    }
-
-    public String getMongoConnectionString() {
-        return properties.getProperty("mongo.connectionString");
-    }
-
-    public enum ConversionDirection {
-        POSTGRES_TO_MONGO,
-        MONGO_TO_POSTGRES
-    }
-
-    public ConversionDirection getConversionDirection() {
-        String directionStr = properties.getProperty("conversion.direction", "POSTGRES_TO_MONGO");
-        try {
-            return ConversionDirection.valueOf(directionStr.toUpperCase());
-        } catch (IllegalArgumentException e) {
-            return ConversionDirection.POSTGRES_TO_MONGO;
-        }
-    }
-
-    public boolean shouldDropExistingTables() {
-        return Boolean.parseBoolean(properties.getProperty("postgres.dropExistingTables", "true"));
-    }
-
-    public enum RelationshipStrategy {
-        EMBED, REFERENCE
-    }
-
-    public enum ManyToManyMode {
-        FULL, IDS
-    }
-
-    public boolean useReferencingStrategy() {
-        return "referencing".equalsIgnoreCase(properties.getProperty("relationship.strategy", "embedding"));
-    }
-
-    public RelationshipStrategy getRelationshipStrategy(String tableName) {
-        String value = properties.getProperty("relationship.strategy." + tableName);
-        if (value == null) {
-            value = properties.getProperty("relationship.strategy.default");
-        }
-        if (value == null) {
-            value = properties.getProperty("relationship.strategy", "EMBED");
-        }
-        try {
-            String upper = value.toUpperCase();
-            if ("REFERENCING".equals(upper)) return RelationshipStrategy.REFERENCE;
-            if ("EMBEDDING".equals(upper)) return RelationshipStrategy.EMBED;
-            return RelationshipStrategy.valueOf(upper);
-        } catch (IllegalArgumentException e) {
-            logger.warn("Invalid relationship strategy '{}' for table '{}', using EMBED", value, tableName);
-            return RelationshipStrategy.EMBED;
-        }
-    }
-
-    public ManyToManyMode getManyToManyMode(String parentTable, String childTable) {
-        String key = "relationship.mn_mode." + parentTable + "_" + childTable;
-        String defaultValue = properties.getProperty("relationship.mn_mode.default", "FULL");
-        String value = properties.getProperty(key, defaultValue);
-        try {
-            return ManyToManyMode.valueOf(value.toUpperCase());
-        } catch (IllegalArgumentException e) {
-            logger.warn("Invalid M:N mode '{}' for {}_{}, using FULL", value, parentTable, childTable);
-            return ManyToManyMode.FULL;
-        }
-    }
-
-    public int getWarnThreshold() {
-        String val = properties.getProperty("relationship.warn_threshold", "1000");
-        try {
-            return Integer.parseInt(val);
-        } catch (NumberFormatException e) {
-            return 1000;
-        }
-    }
-    
-    public boolean useAttributePattern() {
-        return Boolean.parseBoolean(properties.getProperty("pattern.attribute.enabled", "true"));
-    }
-    
-    public int getAttributePatternThreshold() {
-        try {
-            return Integer.parseInt(properties.getProperty("pattern.attribute.threshold", "2"));
-        } catch (NumberFormatException e) {
-            return 2;
-        }
-    }
-    
-    public boolean useBucketPattern() {
-        return Boolean.parseBoolean(properties.getProperty("pattern.bucket.enabled", "false"));
-    }
-    
-    public int getBucketSize() {
-        try {
-            return Integer.parseInt(properties.getProperty("pattern.bucket.size", "10"));
-        } catch (NumberFormatException e) {
-            return 10;
-        }
-    }
-    
-    public boolean useSubsetPattern() {
-        return Boolean.parseBoolean(properties.getProperty("pattern.subset.enabled", "false"));
-    }
-    
-    public int getSubsetLimit() {
-        try {
-            return Integer.parseInt(properties.getProperty("pattern.subset.limit", "10"));
-        } catch (NumberFormatException e) {
-            return 10;
-        }
-    }
-    
-    public boolean useOutlierPattern() {
-        return Boolean.parseBoolean(properties.getProperty("pattern.outlier.enabled", "false"));
-    }
-    
-    public int getOutlierThreshold() {
-        try {
-            return Integer.parseInt(properties.getProperty("pattern.outlier.threshold", "50"));
-        } catch (NumberFormatException e) {
-            return 50;
-        }
-    }
-
-    public String getBucketKey() {
-        return properties.getProperty("pattern.bucket.key");
-    }
-
-    public boolean useComputedPattern() {
-        return Boolean.parseBoolean(properties.getProperty("pattern.computed.enabled", "false"));
-    }
-
-    public String getComputedFields() {
-        return properties.getProperty("pattern.computed.fields", "");
-    }
-
-    public boolean useApproximationPattern() {
-        return Boolean.parseBoolean(properties.getProperty("pattern.approximation.enabled", "false"));
-    }
-
-    public int getApproximationGranularity() {
-        try {
-            return Integer.parseInt(properties.getProperty("pattern.approximation.granularity", "100"));
-        } catch (NumberFormatException e) {
-            return 100;
-        }
-    }
-
-    public String getApproximationFields() {
-        return properties.getProperty("pattern.approximation.fields", "");
-    }
-    
-    public ConversionDirection overrideDirection(String cliDirection) {
-        if (cliDirection == null || cliDirection.isEmpty()) {
-            return getConversionDirection();
-        }
-        try {
-            ConversionDirection direction = ConversionDirection.valueOf(cliDirection.toUpperCase());
-            logger.info("Using CLI direction: {}", direction);
-            return direction;
-        } catch (IllegalArgumentException e) {
-            logger.warn("Invalid CLI direction '{}' - using default from config", cliDirection);
-            return getConversionDirection();
-        }
+    @Override
+    public String toString() {
+        return "DatabaseConfig{" +
+                "sourceJdbcUrl='" + sourceJdbcUrl + '\'' +
+                ", targetMongoUri='" + targetMongoUri + '\'' +
+                ", targetDatabase='" + targetDatabase + '\'' +
+                ", strategies=" + relationshipStrategies +
+                ", patterns=" + patterns.keySet() +
+                '}';
     }
 }

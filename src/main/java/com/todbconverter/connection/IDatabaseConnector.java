@@ -1,27 +1,37 @@
 package com.todbconverter.connection;
 
+import com.todbconverter.config.DatabaseConfig;
+import com.todbconverter.exception.ConnectionException;
+
 /**
- * Interface for database connection management.
- * Provides methods to connect, disconnect, and check connection status.
+ * Common interface for database connections.
  */
-public interface IDatabaseConnector {
-    
+public interface IDatabaseConnector extends AutoCloseable {
+
     /**
-     * Establishes a connection to the database.
-     * 
-     * @throws Exception if connection fails
+     * Establish connection using the provided configuration.
+     *
+     * @param config database configuration
+     * @throws ConnectionException if connection fails
      */
-    void connect() throws Exception;
-    
+    void connect(DatabaseConfig config) throws ConnectionException;
+
     /**
-     * Closes the database connection.
+     * Test if the connection is alive and working.
+     *
+     * @return true if connection is valid
+     * @throws ConnectionException if connection test fails
      */
-    void disconnect();
-    
+    boolean testConnection() throws ConnectionException;
+
     /**
-     * Checks if the database connection is active.
-     * 
-     * @return true if connected, false otherwise
+     * Check if currently connected.
      */
     boolean isConnected();
+
+    /**
+     * Close the connection and release resources.
+     */
+    @Override
+    void close() throws ConnectionException;
 }

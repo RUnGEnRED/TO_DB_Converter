@@ -1,94 +1,48 @@
 package com.todbconverter;
 
-import com.todbconverter.config.ConfigWizard;
-import com.todbconverter.config.DatabaseConfig;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.todbconverter.cli.commands.RunCommand;
+import com.todbconverter.cli.commands.ValidateCommand;
+import com.todbconverter.cli.commands.WizardCommand;
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
 
-import java.io.FileInputStream;
-import java.io.InputStream;
-import java.util.Properties;
-
-public class Main {
-    private static final Logger logger = LoggerFactory.getLogger(Main.class);
+/**
+ * Main entry point for TO_DB Converter.
+ * Database-agnostic SQL-to-NoSQL ETL tool with interactive TUI.
+ */
+@Command(
+        name = "to-db-converter",
+        mixinStandardHelpOptions = true,
+        version = "1.0.0",
+        description = "Convert data from relational databases (JDBC) to MongoDB",
+        subcommands = {
+                RunCommand.class,
+                WizardCommand.class,
+                ValidateCommand.class
+        }
+)
+public class Main implements Runnable {
 
     public static void main(String[] args) {
-        if (hasFlag(args, "--wizard")) {
-            runWizard();
-            return;
-        }
-
-        logger.info("=== TO DB Converter - Start ===");
-
-        ConverterService converterService = null;
-        try {
-            DatabaseConfig config = loadConfig();
-
-            String direction = parseDirectionArg(args);
-            if (direction != null) {
-                logger.info("Overriding conversion direction from CLI: {}", direction);
-            }
-
-            converterService = new ConverterService(config, direction);
-            converterService.convert();
-
-            logger.info("=== TO DB Converter - Finished Successfully ===");
-        } catch (Exception e) {
-            logger.error("Conversion failed", e);
-            System.exit(1);
-        } finally {
-            if (converterService != null) {
-                converterService.close();
-            }
-        }
+        int exitCode = new CommandLine(new Main()).execute(args);
+        System.exit(exitCode);
     }
 
-    private static DatabaseConfig loadConfig() throws Exception {
-        // Try CWD first, then classpath
-        java.io.File cwdFile = new java.io.File("application.properties");
-        if (cwdFile.exists()) {
-            Properties props = new Properties();
-            try (InputStream is = new FileInputStream(cwdFile)) {
-                props.load(is);
-            }
-            return new DatabaseConfig(props);
-        }
-        return new DatabaseConfig("application.properties");
-    }
-
-    private static boolean hasFlag(String[] args, String flag) {
-        for (String arg : args) {
-            if (flag.equals(arg)) return true;
-        }
-        return false;
-    }
-
-    private static void runWizard() {
-        DatabaseConfig config = new DatabaseConfig();
-        try {
-            java.util.Properties props = new java.util.Properties();
-            try (java.io.FileInputStream fis = new java.io.FileInputStream("application.properties")) {
-                props.load(fis);
-            } catch (java.io.IOException e) {
-                // No existing config
-            }
-            config.getProperties().putAll(props);
-        } catch (Exception e) {
-            // Ignore
-        }
-        ConfigWizard wizard = new ConfigWizard(config);
-        wizard.run();
-    }
-
-    private static String parseDirectionArg(String[] args) {
-        for (int i = 0; i < args.length - 1; i++) {
-            if ("--direction".equals(args[i]) || "-d".equals(args[i])) {
-                return args[i + 1];
-            }
-        }
-        if (args.length > 0 && !args[0].startsWith("-")) {
-            return args[0];
-        }
-        return null;
+    @Override
+    public void run() {
+        // No arguments provided - show brief help
+        System.out.println();
+        System.out.println("TO_DB Converter - SQL to MongoDB Migration Tool");
+        System.out.println();
+        System.out.println("Usage:");
+        System.out.println("  to-db-converter --wizard          Launch interactive configuration wizard");
+        System.out.println("  to-db-converter --run             Run conversion using config file");
+        System.out.println("  to-db-converter --run --config X  Run conversion using specified config file");
+        System.out.println("  to-db-converter --validate        Test database connections");
+        System.out.println("  to-db-converter --help            Show this help message");
+        System.out.println("  to-db-converter --version         Show version");
+        System.out.println();
+        System.out.println("Default config file: db-converter.properties");
+        System.out.println();
     }
 }

@@ -1,47 +1,48 @@
 version: '3.8'
 
 services:
-  postgres:
-    image: postgres:15
-    container_name: to_db_postgres
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: source_db
-    ports:
-      - "5433:5432"
-    volumes:
-      - ./database/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d source_db"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
-    networks:
-      - db_network
-
+  # MongoDB - baza docelowa
   mongodb:
-    image: mongo:7
-    container_name: to_db_mongodb
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: admin
+    image: mongo:7.0
+    container_name: todbconverter-mongo-test
     ports:
       - "27018:27017"
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
-    networks:
-      - db_network
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    volumes:
+      - mongo-data:/data/db
+
+  # PostgreSQL - baza zrodlowa
+  postgres:
+    image: postgres:16-alpine
+    container_name: todbconverter-postgres-test
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: source_db
+    command: >
+      postgres
+      -c log_statement=all
+      -c pg_hba.conf=/var/lib/postgresql/data/pg_hba.conf
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d
+
+  # pgAdmin - interfejs do podgladu PostgreSQL
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: todbconverter-pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    depends_on:
+      - postgres
 
 volumes:
-  postgres_data:
-  mongo_data:
-
-networks:
-  db_network:
-    driver: bridge
+  mongo-data:
+  postgres-data:

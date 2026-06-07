@@ -1,115 +1,86 @@
 package com.todbconverter.config;
 
-import org.junit.jupiter.api.BeforeEach;
+import com.todbconverter.core.model.Strategy;
+import com.todbconverter.exception.ConfigException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
-import java.util.Properties;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Tests for DatabaseConfig.
+ */
 class DatabaseConfigTest {
 
-    private DatabaseConfig config;
-    private Properties props;
+    @Test
+    void shouldLoadConfigFromFile(@TempDir Path tempDir) throws IOException, ConfigException {
+        Path configFile = tempDir.resolve("test.properties");
+        Files.writeString(configFile, """
+                source.jdbc.url=jdbc:postgresql://localhost:5433/testdb
+                source.jdbc.username=testuser
+                source.jdbc.password=testpass
+                source.jdbc.driver=org.postgresql.Driver
+                target.mongodb.uri=mongodb://localhost:27017
+                target.mongodb.database=testdb
+                relationship.strategy.default=EMBED
+                relationship.strategy.customers.addresses=EMBED
+                relationship.strategy.cities.addresses=REFERENCE
+                safeguard.max_children_per_parent=500
+                """);
 
-    @BeforeEach
-    void setUp() {
-        props = new Properties();
-        props.setProperty("postgres.host", "localhost");
-        props.setProperty("postgres.port", "5432");
-        props.setProperty("postgres.database", "testdb");
-        props.setProperty("postgres.username", "user");
-        props.setProperty("postgres.password", "pass");
-        props.setProperty("mongo.host", "localhost");
-        props.setProperty("mongo.port", "27017");
-        props.setProperty("mongo.database", "testdb");
-        config = new DatabaseConfig(props);
+        DatabaseConfig config = DatabaseConfig.loadFromFile(configFile.toString());
+
+        assertThat(config.getSourceJdbcUrl()).isEqualTo("jdbc:postgresql://localhost:5433/testdb");
+        assertThat(config.getSourceUsername()).isEqualTo("testuser");
+        assertThat(config.getSourcePassword()).isEqualTo("testpass");
+        assertThat(config.getSourceDriver()).isEqualTo("org.postgresql.Driver");
+        assertThat(config.getTargetMongoUri()).isEqualTo("mongodb://localhost:27017");
+        assertThat(config.getTargetDatabase()).isEqualTo("testdb");
+        assertThat(config.getDefaultStrategy()).isEqualTo(Strategy.EMBED);
+        assertThat(config.getStrategy("customers", "addresses")).isEqualTo(Strategy.EMBED);
+        assertThat(config.getStrategy("cities", "addresses")).isEqualTo(Strategy.REFERENCE);
+        assertThat(config.getMaxChildrenPerParent()).isEqualTo(500);
     }
 
     @Test
-    void perTableStrategy_specificOverridesDefault() {
-        props.setProperty("relationship.strategy.default", "EMBED");
-        props.setProperty("relationship.strategy.logs", "REFERENCE");
-
-        assertEquals(DatabaseConfig.RelationshipStrategy.EMBED, config.getRelationshipStrategy("orders"));
-        assertEquals(DatabaseConfig.RelationshipStrategy.REFERENCE, config.getRelationshipStrategy("logs"));
+    void shouldThrowWhenFileNotFound() {
+        assertThatThrownBy(() -> DatabaseConfig.loadFromFile("nonexistent.properties"))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("not found");
     }
 
     @Test
-    void perTableStrategy_noOverrideUsesDefault() {
-        props.setProperty("relationship.strategy.default", "REFERENCE");
+    void shouldSaveConfigToFile(@TempDir Path tempDir) throws ConfigException, IOException {
+        Path configFile = tempDir.resolve("output.properties");
 
-        assertEquals(DatabaseConfig.RelationshipStrategy.REFERENCE, config.getRelationshipStrategy("orders"));
-        assertEquals(DatabaseConfig.RelationshipStrategy.REFERENCE, config.getRelationshipStrategy("logs"));
+        DatabaseConfig config = new DatabaseConfig();
+        config.setSourceJdbcUrl("jdbc:postgresql://localhost:5433/testdb");
+        config.setSourceUsername("testuser");
+        config.setSourcePassword("testpass");
+        config.setTargetMongoUri("mongodb://localhost:27017");
+        config.setTargetDatabase("testdb");
+        config.setStrategy("customers", "addresses", Strategy.EMBED);
+
+        config.saveToFile(configFile.toString());
+
+        assertThat(Files.exists(configFile)).isTrue();
+
+        // Reload and verify
+        DatabaseConfig loaded = DatabaseConfig.loadFromFile(configFile.toString());
+        assertThat(loaded.getSourceJdbcUrl()).isEqualTo("jdbc:postgresql://localhost:5433/testdb");
+        assertThat(loaded.getStrategy("customers", "addresses")).isEqualTo(Strategy.EMBED);
     }
 
     @Test
-    void perTableStrategy_defaultIsEmbedWhenNotSet() {
-        assertEquals(DatabaseConfig.RelationshipStrategy.EMBED, config.getRelationshipStrategy("any_table"));
-    }
+    void shouldReturnDefaultStrategyForUnconfiguredEdge() {
+        DatabaseConfig config = new DatabaseConfig();
+        config.setDefaultStrategy(Strategy.REFERENCE);
 
-    @Test
-    void perTableStrategy_invalidValueFallsBackToDefault() {
-        props.setProperty("relationship.strategy.broken", "INVALID");
-
-        assertEquals(DatabaseConfig.RelationshipStrategy.EMBED, config.getRelationshipStrategy("broken"));
-    }
-
-    @Test
-    void manyToManyMode_fullByIds() {
-        props.setProperty("relationship.mn_mode.default", "IDS");
-        props.setProperty("relationship.mn_mode.students_courses", "FULL");
-
-        assertEquals(DatabaseConfig.ManyToManyMode.FULL, config.getManyToManyMode("students", "courses"));
-        assertEquals(DatabaseConfig.ManyToManyMode.IDS, config.getManyToManyMode("actors", "movies"));
-    }
-
-    @Test
-    void manyToManyMode_defaultIsFull() {
-        assertEquals(DatabaseConfig.ManyToManyMode.FULL, config.getManyToManyMode("a", "b"));
-    }
-
-    @Test
-    void manyToManyMode_invalidValueFallsBackToDefault() {
-        props.setProperty("relationship.mn_mode.x_y", "BAD");
-
-        assertEquals(DatabaseConfig.ManyToManyMode.FULL, config.getManyToManyMode("x", "y"));
-    }
-
-    @Test
-    void warnThreshold_defaultIs1000() {
-        assertEquals(1000, config.getWarnThreshold());
-    }
-
-    @Test
-    void warnThreshold_customValue() {
-        props.setProperty("relationship.warn_threshold", "500");
-        assertEquals(500, config.getWarnThreshold());
-    }
-
-    @Test
-    void warnThreshold_invalidValueFallsBackToDefault() {
-        props.setProperty("relationship.warn_threshold", "abc");
-        assertEquals(1000, config.getWarnThreshold());
-    }
-
-    @Test
-    void useReferencingStrategy_backwardCompatible() {
-        props.setProperty("relationship.strategy", "referencing");
-        assertTrue(config.useReferencingStrategy());
-
-        props.setProperty("relationship.strategy", "embedding");
-        assertFalse(config.useReferencingStrategy());
-    }
-
-    @Test
-    void relationshipStrategyEnums_values() {
-        assertEquals(2, DatabaseConfig.RelationshipStrategy.values().length);
-        assertNotNull(DatabaseConfig.RelationshipStrategy.EMBED);
-        assertNotNull(DatabaseConfig.RelationshipStrategy.REFERENCE);
-
-        assertEquals(2, DatabaseConfig.ManyToManyMode.values().length);
-        assertNotNull(DatabaseConfig.ManyToManyMode.FULL);
-        assertNotNull(DatabaseConfig.ManyToManyMode.IDS);
+        assertThat(config.getStrategy("unknown", "table")).isEqualTo(Strategy.REFERENCE);
     }
 }

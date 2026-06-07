@@ -45,10 +45,13 @@ buildNumber.properties
 *.ipr
 .project
 .classpath
+.factorypath
 .settings/
 bin/
 
 # Agentic tools
 .agents/
 .opencode/
-docs/mongodb_docs/
+docs/
+logs/
+temp/
