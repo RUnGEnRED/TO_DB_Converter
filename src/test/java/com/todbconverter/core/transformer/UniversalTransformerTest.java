@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for UniversalTransformer.
@@ -192,6 +193,44 @@ class UniversalTransformerTest {
         // Verify
         assertThat(result).containsKey("employees");
         assertThat(result.get("employees")).hasSize(2);
+    }
+
+    @Test
+    void shouldThrowWhenOutlierWithEmbedStrategy() {
+        // Setup: Outlier requires REFERENCE — pre-flight should reject EMBED
+        DatabaseConfig config = new DatabaseConfig();
+        config.setDefaultStrategy(Strategy.EMBED);
+        config.setStrategy("activity_logs", "employees", Strategy.EMBED);
+        config.setPatternConfig("employees", "outlier", "activity_logs=2");
+        transformer = new UniversalTransformer(config);
+
+        graph.addTable(TableMetadata.builder()
+                .name("employees")
+                .tableType(TableType.PRIMARY_ENTITY)
+                .addColumn(new ColumnMetadata("id", "INT", java.sql.Types.INTEGER, true, false, false))
+                .addColumn(new ColumnMetadata("name", "VARCHAR", java.sql.Types.VARCHAR, false, true, false))
+                .build());
+
+        graph.addTable(TableMetadata.builder()
+                .name("activity_logs")
+                .tableType(TableType.CHILD_ENTITY)
+                .addColumn(new ColumnMetadata("id", "INT", java.sql.Types.INTEGER, true, false, false))
+                .addColumn(new ColumnMetadata("employee_id", "INT", java.sql.Types.INTEGER, false, true, false))
+                .addColumn(new ColumnMetadata("action", "VARCHAR", java.sql.Types.VARCHAR, false, true, false))
+                .build());
+
+        graph.addEdge(new ForeignKeyMetadata("activity_logs", "employee_id", "employees", "id",
+                Cardinality.ONE_TO_MANY));
+
+        rawData.put("employees", List.of(Map.of("id", 1, "name", "Jan")));
+        rawData.put("activity_logs", List.of(
+                Map.of("id", 1, "employee_id", 1, "action", "login"),
+                Map.of("id", 2, "employee_id", 1, "action", "logout")
+        ));
+
+        assertThatThrownBy(() -> transformer.transform(graph, rawData, config))
+                .isInstanceOf(TransformationException.class)
+                .hasMessageContaining("REFERENCE");
     }
 
     @Test

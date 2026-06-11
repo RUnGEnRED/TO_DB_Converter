@@ -30,12 +30,17 @@ public class UniversalTransformer {
         this.maxChildrenPerParent = config.getMaxChildrenPerParent();
 
         // Initialize pattern appliers
-        // Order matters: Approximation runs last so it can also round any
-        // numeric values that Computed inserted into the document.
+        // Order matters:
+        //   Attribute first — restructures columns into key-value arrays
+        //   Computed next  — inserts aggregate fields (COUNT/SUM)
+        //   Subset next   — limits embedded child arrays to N recent items
+        //   Outlier next  — caps embedded arrays with has_extras flag
+        //   Approximation last — rounds top-level numeric values
         this.patternAppliers = List.of(
                 new AttributePattern(),
                 new ComputedPattern(),
                 new SubsetPattern(),
+                new OutlierPattern(),
                 new ApproximationPattern()
         );
     }
@@ -60,7 +65,12 @@ public class UniversalTransformer {
         // 2. Check for unbounded arrays
         checkUnboundedArrays(rawData, graph);
 
-        // 3. Get topological order (children first, using strategyRegistry)
+        // 3. Pre-flight validation: check all Outlier configs before any data processing.
+        // This prevents partial MongoDB state if a config is invalid — if validation
+        // fails, the exception is thrown before any table is transformed.
+        validateOutlierConfigs(graph, config);
+
+        // 4. Get topological order (children first, using strategyRegistry)
         List<String> topoOrder = graph.getTopologicalOrder(strategyRegistry);
         logger.info("Topological order: {}", topoOrder);
 
@@ -477,6 +487,74 @@ public class UniversalTransformer {
                     }
                 }
             }
+            case "outlier" -> {
+                // Format: [ChildTable]=[Threshold]
+                // Example: activity_logs=3
+                String[] parts = patternConfig.split("=", 2);
+                if (parts.length == 2) {
+                    String childTable = parts[0].trim();
+                    int threshold;
+                    try {
+                        threshold = Integer.parseInt(parts[1].trim());
+                    } catch (NumberFormatException nfe) {
+                        throw new TransformationException(
+                                "Invalid outlier threshold '" + parts[1] + "' for table " + tableName
+                                        + " — must be a non-negative integer");
+                    }
+                    if (threshold < 0) {
+                        throw new TransformationException(
+                                "Invalid outlier threshold " + threshold + " for table " + tableName
+                                        + " — must be >= 0");
+                    }
+
+                    // Fail-fast: Outlier requires REFERENCE strategy.
+                    // The strategyRegistry reflects the active strategy after
+                    // safety fuse modifications (cycle resolution, unbounded arrays).
+                    Strategy activeStrategy = strategyRegistry.getStrategy(tableName, childTable);
+                    if (activeStrategy == Strategy.EMBED) {
+                        throw new TransformationException(
+                                "Outlier pattern requires REFERENCE strategy for "
+                                        + childTable + "." + tableName
+                                        + ", but found EMBED. "
+                                        + "Configure: relationship.strategy."
+                                        + childTable + "." + tableName + "=REFERENCE");
+                    }
+
+                    context.put("threshold", threshold);
+                    context.put("arrayName", childTable);
+
+                    // Resolve children from rawData
+                    List<Map<String, Object>> children = rawData.get(childTable);
+                    if (children != null) {
+                        String childFkCol = findForeignKeyColumn(graph, childTable, tableName);
+                        String parentPkCol = getPrimaryKeyColumn(graph, tableName);
+                        Object parentPk = document.get(parentPkCol);
+                        if (parentPk != null && childFkCol != null) {
+                            String finalChildFkCol = childFkCol;
+                            children = children.stream()
+                                    .filter(c -> parentPk.equals(c.get(finalChildFkCol)))
+                                    .toList();
+                        } else {
+                            children = Collections.emptyList();
+                        }
+
+                        // Sort children by PK descending for deterministic output
+                        String childPkCol = getPrimaryKeyColumn(graph, childTable);
+                        List<Map<String, Object>> sortedChildren = new ArrayList<>(children);
+                        sortedChildren.sort((c1, c2) -> {
+                            Object v1 = c1.get(childPkCol);
+                            Object v2 = c2.get(childPkCol);
+                            if (v1 instanceof Comparable && v2 instanceof Comparable) {
+                                return ((Comparable) v2).compareTo(v1); // Descending
+                            }
+                            return 0;
+                        });
+
+                        context.put("children", sortedChildren);
+                        context.put("fkColumn", childFkCol);
+                    }
+                }
+            }
             case "approximation" -> {
                 // Format: <field1>:<gran1>,<field2>:<gran2>
                 // Validation of granularity values happens inside the applier
@@ -564,5 +642,37 @@ public class UniversalTransformer {
         }
         // Fallback: look for common FK naming patterns
         return parentTable.toLowerCase() + "_id";
+    }
+
+    /**
+     * Pre-flight validation: check all Outlier pattern configs before any data
+     * is transformed. Throws TransformationException if any table uses Outlier
+     * with EMBED strategy — this would cause silent data loss because REFERENCE
+     * is required to preserve the remaining children in their own collection.
+     * <p>
+     * Runs before the main transformation loop so that MongoDB is never left
+     * in a partial state.
+     */
+    private void validateOutlierConfigs(SchemaGraph graph, DatabaseConfig config)
+            throws TransformationException {
+        for (TableMetadata table : graph.getTables()) {
+            String tableName = table.getName();
+            Map<String, String> patternConfigs = config.getPatternConfig(tableName);
+            String outlierConfig = patternConfigs.get("outlier");
+            if (outlierConfig == null) continue;
+
+            String[] parts = outlierConfig.split("=", 2);
+            if (parts.length == 2) {
+                String childTable = parts[0].trim();
+                Strategy activeStrategy = strategyRegistry.getStrategy(tableName, childTable);
+                if (activeStrategy == Strategy.EMBED) {
+                    throw new TransformationException(
+                            "Pre-flight validation failed: Outlier pattern requires REFERENCE strategy for "
+                                    + childTable + "." + tableName + ", but found EMBED. "
+                                    + "Configure: relationship.strategy."
+                                    + childTable + "." + tableName + "=REFERENCE");
+                }
+            }
+        }
     }
 }

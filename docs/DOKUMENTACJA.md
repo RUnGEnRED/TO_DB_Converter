@@ -60,7 +60,7 @@ System **TO DB Converter** realizuje konwersję **PostgreSQL → MongoDB** z uż
 mvn clean package
 
 # 2. Uruchomienie baz (inicjalizacja seed)
-docker-compose up -d
+docker compose up -d
 
 # 3a. Interaktywny kreator konfiguracji
 java -jar target/to-db-converter-1.0.0.jar wizard
@@ -72,7 +72,7 @@ java -jar target/to-db-converter-1.0.0.jar run
 java -jar target/to-db-converter-1.0.0.jar validate
 
 # 4. Zatrzymanie środowiska
-docker-compose down -v
+docker compose down -v
 ```
 
 ## 2.3. CLI — komendy
@@ -104,7 +104,7 @@ relationship.strategy.default=EMBED
 
 # === Nadpisania strategii per para tabel ===
 # Format: child_table.parent_table=STRATEGY
-relationship.strategy.activity_logs.employees=EMBED
+relationship.strategy.activity_logs.employees=REFERENCE
 relationship.strategy.employee_details.employees=EMBED
 relationship.strategy.employee_projects.employees=REFERENCE
 relationship.strategy.employee_projects.projects=REFERENCE
@@ -119,6 +119,7 @@ pattern.computed.departments=employee_count=COUNT(employees.id)
 pattern.computed.employees=subordinate_count=COUNT(employees.id)
 pattern.computed.projects=participant_count=COUNT(employee_projects.employee_id)
 pattern.subset.employees=activity_logs=3
+pattern.outlier.employees=activity_logs=3
 pattern.approximation.metrics=population:100,visits:1000
 
 # === Bezpieczniki ===
@@ -151,14 +152,17 @@ Wizard to aplikacja TUI (Text User Interface) zbudowana na bibliotece **JLine 3*
 |------|-------|------|
 | **1/4** | Connections | URL JDBC, username, password, URI Mongo, docelowa baza |
 | **2/4** | Relationship Strategies | Tabela relacji z wyborem strategii EMBED/REFERENCE per para |
-| **3/4** | Design Patterns | Matryca tabel × {Attribute, Computed, Subset, Approximation} z konfiguracją |
+| **3/4** | Design Patterns | Matryca tabel × {Attribute, Computed, Subset, Outlier, Approximation} z konfiguracją |
+| **4/4** | Summary | Podgląd gotowej konfiguracji, zapis do `db-converter.properties` |
 
 ### 3.2.1 Format konfiguracji w wizardzie
+
+W kroku 3 każdy wzorzec wymaga innego formatu konfiguracji:
 - **Attribute** — `arrayName=col:Key,col:Key,...` (np. `releases=release_US:USA,release_France:France`)
 - **Computed** — `fieldName=FUNC(childTable.column)` (np. `order_count=COUNT(orders.id)`)
 - **Subset** — `childTable=limit` (np. `reviews=3`)
+- **Outlier** — `childTable=threshold` (np. `activity_logs=3`)
 - **Approximation** — `field1:gran1,field2:gran2` (np. `population:100,visits:1000`)
-| **4/4** | Summary | Podgląd gotowej konfiguracji, zapis do `db-converter.properties` |
 
 ## 3.2. Nawigacja w wizardzie
 
@@ -237,7 +241,7 @@ public enum Cardinality {
 
 ## 4.3. Wykrywanie 1:1 vs 1:N — `determineCardinality()`
 
-Metoda `JDBCSchemaExtractor.determineCardinality(ForeignKeyMetadata fk, Connection conn)`:
+Metoda `JDBCSchemaExtractor.determineCardinality(Connection connection, ForeignKeyMetadata fk)`:
 
 1. Pobiera indeksy przez `meta.getIndexInfo(catalog, schema, fkTable, unique=true, approx=false)`.
 2. **Grupuje wyniki po `INDEX_NAME`** — `getIndexInfo()` zwraca JEDEN WIERSZ na kolumnę indeksu.
@@ -349,13 +353,13 @@ Aby uzyskać listę child IDs u rodzica, należy użyć **Computed Pattern** (`C
 
 # 6. Wzorce projektowe MongoDB
 
-System implementuje **4 wzorce** z katalogu MongoDB Design Patterns:
+System implementuje **5 wzorców** z katalogu MongoDB Design Patterns:
 
 ```
-Attribute → Computed → Subset → Approximation
+Attribute → Computed → Subset → Outlier → Approximation
 ```
 
-Kolejność aplikacji jest zachowana przez `UniversalTransformer.applyPatterns()`. Approximation jest uruchamiany ostatni, aby mógł zaokrąglić również wartości liczbowe wstawione przez Computed.
+Kolejność aplikacji jest zachowana przez `UniversalTransformer.applyPatterns()`. Approximation jest uruchamiany ostatni, aby mógł zaokrąglić również wartości liczbowe wstawione przez Computed. Outlier dodaje flagę `has_extras` zanim Approximation zaokrągli wartości w dokumencie.
 
 ## 6.1. Attribute Pattern
 
@@ -506,6 +510,66 @@ visits:     9847
 
 ---
 
+## 6.5. Outlier Pattern
+
+Identyfikuje dokumenty, które mają nadmierną liczbę dzieci (ang. *outliers*) i ogranicza rozmiar osadzonej tablicy, dodając flagę `has_extras`. Reszta danych pozostaje w osobnej kolekcji (wymagana strategia `REFERENCE`). Wzorzec odpowiada katalogowi MongoDB Design Patterns (`outlier-pattern.md`).
+
+**Wymaganie:** Relacja child→parent musi być skonfigurowana jako `REFERENCE`. Użycie Outlier + `EMBED` = błąd transformacji. Zaimplementowano 3-warstwową walidację:
+
+1. **Wizard krok 3 (ConsoleWizard)** — ⚠️ żółte ostrzeżenie + `reader.readLine("")` pauza po wykryciu Outlier + EMBED
+2. **Wizard krok 4 — Summary (ConsoleWizard)** — czerwona sekcja "Configuration Warnings" z listą konfliktów przed zapisem pliku
+3. **Runtime pre-flight (UniversalTransformer.validateOutlierConfigs)** — sprawdzenie PRZED główną pętlą przekształceń; przy konflikcie `TransformationException`, 0 kolekcji zapisanych do MongoDB
+
+**Config:**
+```properties
+pattern.outlier.<tabela>=<childTable>=<threshold>
+```
+
+**Przykład:** `pattern.outlier.employees=activity_logs=3`
+
+**Wynik w MongoDB — pracownik normalny (≤3 logi):**
+```json
+{
+  "name": "Anna Nowak",
+  "activity_logs": [
+    { "id": 4, "action": "login", "ip": "10.0.0.1" }
+  ],
+  "has_extras": false
+}
+```
+
+**Wynik — outlier (>3 logi, np. 5):**
+```json
+{
+  "name": "Jan Kowalski",
+  "activity_logs": [
+    { "id": 3, "action": "logout" },
+    { "id": 2, "action": "edit_file" },
+    { "id": 1, "action": "login" }
+  ],
+  "has_extras": true
+}
+```
+
+Reszta logów Jana (id 4, 5) znajduje się w osobnej kolekcji `activity_log` — aplikacja widząc `has_extras: true` może odpytać tę kolekcję po pełną historię.
+
+**Implementacja:** `OutlierPattern.apply()` (`core/transformer/patterns/OutlierPattern.java`)
+
+**Zachowania specjalne:**
+- Wymaga strategii REFERENCE — walidowane dwutorowo: (1) pre-flight `validateOutlierConfigs()` przed główną pętlą, (2) ponownie w `parsePatternContext` przez `strategyRegistry.getStrategy()` (uwzględnia safety fuse'y: cykle, self-ref, unbounded arrays).
+- Kolumna FK jest usuwana z osadzonych kopii (redundantna w kontekście rodzica).
+- Flaga `has_extras: true/false` pozwala aplikacji odpytać osobną kolekcję.
+- Dzieci są sortowane malejąco po PK dla deterministycznego outputu.
+- Próg `threshold=0` = zawsze `has_extras: true`, pusta tablica osadzona.
+
+**Brak konfliktów:**
+- **Subset** tworzy `recent_X` — Outlier tworzy bezpośrednio `X` (różne pola).
+- **Computed** liczy COUNT/SUM na wszystkich dzieciach — Outlier nie ingeruje w `rawData`.
+- **Approximation** zaokrągla top-level skalary — Outlier osadza tablicę dzieci (Approximation nie wchodzi do zagnieżdżonych struktur).
+- **Attribute** grupuje kolumny w key-value — Outlier nie modyfikuje kolumn.
+
+---
+
 # 7. Przepływ danych krok po kroku
 
 ## 7.1. Diagram sekwencji
@@ -535,11 +599,11 @@ Użytkownik
                                                           ▼
                                               UniversalTransformer.transform()
                                                           │
-                                ┌─────────────────────────┼─────────────────────────┐
-                                ▼                         ▼                         ▼
-                          BuildRelIndex           For each table:           ApplyPatterns
-                          (parent→children)        For each row:             (Attribute, Computed, Subset)
-                                                    ApplyEmbed/Reference
+                                 ┌─────────────────────────┼──────────────────────────────┐
+                                 ▼                         ▼                              ▼
+                           BuildRelIndex           For each table:                ApplyPatterns v60s
+                           (parent→children)        For each row:              (Attribute → Computed →
+                                                     ApplyEmbed/Reference       Subset → Outlier → Approx)
                                                           │
                                                           ▼
                                                     MongoDBLoader.load()
@@ -562,7 +626,13 @@ Użytkownik
 
 ## 7.3. Szczegóły `UniversalTransformer.transform()`
 
-Dla każdej tabeli w kolejności topologicznej:
+Przed główną pętlą, `transform()` wykonuje sekwencyjnie 3 kroki przygotowawcze:
+
+1. **Wykrywanie cykli** — `detectAndHandleCycles()` wymusza REFERENCE dla self-ref i cykli (safety net).
+2. **Safeguard unbounded arrays** — `checkUnboundedArrays()` downgrade EMBED→REFERENCE dla zbyt dużych tablic.
+3. **Pre-flight Outlier** — `validateOutlierConfigs()` rzuca `TransformationException` jeśli Outlier + EMBED na tej samej relacji.
+
+Następnie dla każdej tabeli w kolejności topologicznej:
 
 1. **Indeks relacji** — `buildRelationshipIndex()` tworzy `Map<childTable.fkColumn, Map<parentPkValue, List<childRow>>>` dla O(1) lookupów dzieci.
 
@@ -576,15 +646,11 @@ Dla każdej tabeli w kolejności topologicznej:
        - `buildChildFieldName()` — unikalna nazwa pola (suffix `_by_<fk_col>` przy kolizji).
      - Jeśli `REFERENCE`:
        - Pomijanie — dzieci zostają w osobnej kolekcji z FK.
-   - **Zastosuj wzorce** — `applyPatterns()`:
+   - **Zastosuj wzorce** — `applyPatterns()` (Attribute → Computed → Subset → Outlier → Approximation):
      - Dla każdego włączonego `pattern.<type>.<table>`:
        - `parsePatternContext()` parsuje config → context map.
        - `applier.apply(document, context)` modyfikuje dokument.
    - Dodaj do listy transformed.
-
-3. **Wykrywanie cykli** — `detectAndHandleCycles()` wymusza REFERENCE dla self-ref i cykli (safety net).
-
-4. **Safeguard** — `checkUnboundedArrays()` downgrade EMBED→REFERENCE dla zbyt dużych tablic.
 
 ## 7.4. Szczegóły `MongoDBLoader.load()`
 
@@ -605,7 +671,6 @@ Kolekcje typu `CHILD_ENTITY` z EMBED są **pomijane** przy ładowaniu (już są 
 | Plik | Odpowiedzialność |
 |------|-----------------|
 | `Main.java` | Entry point, parsowanie CLI przez Picocli |
-| `App.java` | Alternatywny entry point |
 | `cli/commands/RunCommand.java` | Komenda `run` — pełna migracja |
 | `cli/commands/WizardCommand.java` | Komenda `wizard` — TUI kreator |
 | `cli/commands/ValidateCommand.java` | Komenda `validate` — test połączeń |
@@ -635,6 +700,7 @@ Kolekcje typu `CHILD_ENTITY` z EMBED są **pomijane** przy ładowaniu (już są 
 | `patterns/ComputedPattern.java` | Implementacja Computed (COUNT/SUM) |
 | `patterns/SubsetPattern.java` | Implementacja Subset |
 | `patterns/ApproximationPattern.java` | Implementacja Approximation (HALF_UP rounding) |
+| `patterns/OutlierPattern.java` | Implementacja Outlier (threshold + has_extras) |
 
 ## 8.5. Ładowanie (loader)
 
@@ -704,33 +770,34 @@ Kolekcje typu `CHILD_ENTITY` z EMBED są **pomijane** przy ładowaniu (już są 
 
 | Kategoria | Liczba |
 |-----------|--------|
-| Testy jednostkowe | 94 |
-| Testy integracyjne | 1 (FullMigrationIntegrationTest) |
-| **Łącznie** | **96** |
+| Testy jednostkowe | 136 |
+| Testy integracyjne | 3 (FullMigrationIntegrationTest, MongoDBLoaderTest) |
+| **Łącznie** | **139** |
 
 ## 9.2. Testy jednostkowe (JUnit 5 + AssertJ)
 
-| Klasa testowa | Testowana klasa | Liczba |
-|---------------|----------------|--------|
-| `UniversalTransformerTest` | `UniversalTransformer` | wiele |
-| `ManyToManyTransformerTest` | M:N w transformer | wiele |
-| `JDBCSchemaExtractorTest` | `JDBCSchemaExtractor` | wiele |
-| `JDBCDataExtractorTest` | `JDBCDataExtractor` | wiele |
-| `MongoDBLoaderTest` | `MongoDBLoader` | wiele |
-| `SchemaGraphTest` | `SchemaGraph` | wiele |
-| `TableMetadataTest` | `TableMetadata` | wiele |
-| `ColumnMetadataTest` | `ColumnMetadata` | wiele |
-| `ForeignKeyMetadataTest` | `ForeignKeyMetadata` | wiele |
-| `DatabaseConfigTest` | `DatabaseConfig` | 12 |
-| `EdgeStrategyRegistryTest` | `EdgeStrategyRegistry` | wiele |
-| `DateUtilsTest` | `DateUtils` | 12 |
-| `StringUtilsTest` | `StringUtils` | 7 |
-| `AttributePatternTest` | `AttributePattern` | wiele |
-| `ComputedPatternTest` | `ComputedPattern` | wiele |
-| `SubsetPatternTest` | `SubsetPattern` | wiele |
-| `ApproximationPatternTest` | `ApproximationPattern` | 14 |
-| `ExceptionHandlingTest` | Hierarchia wyjątków | wiele |
-| `AppTest` | Smoke test | 1 |
+| Klasa testowa | Testowana klasa |
+|---------------|----------------|
+| `UniversalTransformerTest` | `UniversalTransformer` (5 wzorców, EMBED/REFERENCE, self-ref) |
+| `ManyToManyTransformerTest` | M:N w transformer |
+| `JDBCSchemaExtractorTest` | `JDBCSchemaExtractor` |
+| `JDBCDataExtractorTest` | `JDBCDataExtractor` |
+| `MongoDBLoaderTest` | `MongoDBLoader` |
+| `SchemaGraphTest` | `SchemaGraph` |
+| `TableMetadataTest` | `TableMetadata` |
+| `ColumnMetadataTest` | `ColumnMetadata` |
+| `ForeignKeyMetadataTest` | `ForeignKeyMetadata` |
+| `DatabaseConfigTest` | `DatabaseConfig` |
+| `EdgeStrategyRegistryTest` | `EdgeStrategyRegistry` |
+| `DateUtilsTest` | `DateUtils` |
+| `StringUtilsTest` | `StringUtils` |
+| `AttributePatternTest` | `AttributePattern` |
+| `ComputedPatternTest` | `ComputedPattern` |
+| `SubsetPatternTest` | `SubsetPattern` |
+| `ApproximationPatternTest` | `ApproximationPattern` |
+| `OutlierPatternTest` | `OutlierPattern` |
+| `ExceptionHandlingTest` | Hierarchia wyjątków |
+| `AppTest` | Smoke test |
 
 ## 9.3. Testy integracyjne
 
@@ -738,7 +805,7 @@ Kolekcje typu `CHILD_ENTITY` z EMBED są **pomijane** przy ładowaniu (już są 
 |-------|------|
 | `FullMigrationIntegrationTest` | Pełen przebieg: PostgreSQL seed → konwersja → MongoDB weryfikacja |
 
-Wymaga działających kontenerów Docker (`docker-compose up -d`).
+Wymaga działających kontenerów Docker (`docker compose up -d`).
 
 ## 9.4. Uruchomienie
 
@@ -768,6 +835,8 @@ mvn test -Dtest=UniversalTransformerTest
 | Computed SUM | ✅ |
 | Subset pattern | ✅ |
 | Approximation pattern | ✅ |
+| Outlier pattern (threshold + has_extras) | ✅ |
+| EMBED+Outlier pre-flight validation | ✅ |
 | Timezone handling | ✅ |
 | Integer/Long comparison | ✅ |
 | Composite PK nie-klasyfikowane jako 1:1 | ✅ |
@@ -893,7 +962,7 @@ Podczas developmentu i testów zidentyfikowano 12 błędów, z czego 10 zostało
 
 ```bash
 # 1. Czyste środowisko
-docker-compose down -v && docker-compose up -d
+docker compose down -v && docker compose up -d
 
 # 2. Czekaj aż seed się załaduje (~10s)
 until docker exec todbconverter-postgres-test psql -U postgres -d source_db -c "SELECT count(*) FROM employees" 2>/dev/null | grep -q 3; do sleep 1; done

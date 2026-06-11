@@ -356,9 +356,9 @@ public class ConsoleWizard {
         List<String> tables = graph.getTables().stream().map(TableMetadata::getName).toList();
         if (tables.isEmpty()) return;
 
-        String[] keys = {"attribute", "computed", "subset", "approximation"};
-        String[] labels = {"Attr", "Comp", "Subs", "Appr"};
-        String[] descs = {"Group fields into key-value array", "Pre-calculate COUNT/SUM", "Embed recent N records", "Round numeric values to granularity"};
+        String[] keys = {"attribute", "computed", "subset", "outlier", "approximation"};
+        String[] labels = {"Attr", "Comp", "Subs", "Outl", "Appr"};
+        String[] descs = {"Group fields into key-value array", "Pre-calculate COUNT/SUM", "Embed recent N records", "Cap + flag outliers in separate collection", "Round numeric values to granularity"};
         boolean[][] enabled = new boolean[tables.size()][keys.length];
         for (int t = 0; t < tables.size(); t++) for (int p = 0; p < keys.length; p++) enabled[t][p] = config.getPatternConfig(tables.get(t)).containsKey(keys[p]);
 
@@ -381,8 +381,10 @@ public class ConsoleWizard {
                 terminal.writer().println(ansi("  @|bold,g Attr|@ = " + descs[0]));
                 terminal.writer().println(ansi("  @|bold,c Comp|@ = " + descs[1]));
                 terminal.writer().println(ansi("  @|bold,m Subs|@ = " + descs[2]));
-                terminal.writer().println(ansi("  @|bold,y Appr|@ = " + descs[3]));
+                terminal.writer().println(ansi("  @|bold,y Appr|@ = " + descs[4]));
+                terminal.writer().println(ansi("  @|bold,red Outl|@ = " + descs[3]));
                 terminal.writer().println();
+                // Adjust header: 5 columns now
                 StringBuilder h = new StringBuilder("  ");
                 h.append(String.format("%-20s", "Table"));
                 for (String l : labels) h.append(String.format(" %5s", l));
@@ -420,7 +422,7 @@ public class ConsoleWizard {
                         terminal.flush();
                         reader = LineReaderBuilder.builder().terminal(terminal).build();
                         terminal.writer().println();
-                        String val = askPatternConfig(t, p);
+                        String val = askPatternConfig(t, p, graph);
                         if (val != null && !val.isBlank()) { config.setPatternConfig(t, p, val); }
                         else enabled[sr][sc] = false;
                         terminal.enterRawMode();
@@ -442,7 +444,7 @@ public class ConsoleWizard {
         terminal.writer().println();
     }
 
-    private String askPatternConfig(String table, String pattern) {
+    private String askPatternConfig(String table, String pattern, SchemaGraph graph) {
         String val;
         switch (pattern) {
             case "attribute" -> {
@@ -475,6 +477,35 @@ public class ConsoleWizard {
                     val = readLine("  Config", "");
                     if (val.isEmpty()) return val;
                     if (!val.contains("=")) terminal.writer().println(ansi("@|yellow Must use format: childTable=limit|@"));
+                } while (!val.contains("="));
+                return val;
+            }
+            case "outlier" -> {
+                do {
+                    terminal.writer().println(ansi("@|bold Outlier for " + table + "|@"));
+                    terminal.writer().println(ansi("@|faint Format: childTable=threshold|@"));
+                    terminal.writer().println(ansi("@|faint Example: activity_logs=3|@"));
+                    val = readLine("  Config", "");
+                    if (val.isEmpty()) return val;
+                    if (!val.contains("=")) {
+                        terminal.writer().println(ansi("@|yellow Must use format: childTable=threshold|@"));
+                    } else {
+                        String childTable = val.split("=", 2)[0].trim();
+                        if (!childTable.isEmpty()) {
+                            // Verify the relationship exists: childTable must be an actual FK child of this table
+                            boolean hasRelationship = graph != null
+                                    && graph.getIncomingEdges(table).stream()
+                                            .anyMatch(fk -> fk.getFkTableName().equals(childTable));
+                            if (hasRelationship
+                                    && config.getStrategy(childTable, table) == Strategy.EMBED) {
+                                terminal.writer().println(ansi("@|red \u26A0  Outlier + EMBED causes data loss!|@"));
+                                terminal.writer().println(ansi("@|yellow  Change \"" + childTable + "." + table + "\" to REFERENCE in Step 2.|@"));
+                                terminal.writer().println(ansi("@|faint Press Enter to continue anyway...|@"));
+                                terminal.flush();
+                                reader.readLine("");
+                            }
+                        }
+                    }
                 } while (!val.contains("="));
                 return val;
             }
@@ -530,6 +561,31 @@ public class ConsoleWizard {
             if (hasPatterns) {
                 terminal.writer().println(ansi("@|bold Design Patterns|@"));
                 terminal.writer().print(sb.toString());
+                terminal.writer().println();
+            }
+
+            // Check for configuration warnings (e.g. Outlier + EMBED)
+            List<String> warnings = new ArrayList<>();
+            for (TableMetadata t : graph.getTables()) {
+                String tableName = t.getName();
+                Map<String, String> cfgs = config.getPatternConfig(tableName);
+                String outlierCfg = cfgs.get("outlier");
+                if (outlierCfg != null && outlierCfg.contains("=")) {
+                    String childTable = outlierCfg.split("=", 2)[0].trim();
+                    if (!childTable.isEmpty()
+                            && graph.getIncomingEdges(tableName).stream()
+                                    .anyMatch(fk -> fk.getFkTableName().equals(childTable))
+                            && config.getStrategy(childTable, tableName) == Strategy.EMBED) {
+                        warnings.add("  \u26A0  Outlier on \"" + tableName + "\" uses EMBED"
+                                + " for \"" + childTable + "\" \u2014 requires REFERENCE.");
+                    }
+                }
+            }
+            if (!warnings.isEmpty()) {
+                terminal.writer().println(ansi("@|bold,red Configuration Warnings|@"));
+                for (String w : warnings) {
+                    terminal.writer().println(ansi("@|yellow " + w + "|@"));
+                }
                 terminal.writer().println();
             }
         }
