@@ -1,5 +1,6 @@
 package com.todbconverter;
 
+import com.todbconverter.cli.commands.ReportCommand;
 import com.todbconverter.cli.commands.RunCommand;
 import com.todbconverter.cli.commands.ValidateCommand;
 import com.todbconverter.cli.commands.WizardCommand;
@@ -18,31 +19,47 @@ import picocli.CommandLine.Command;
         subcommands = {
                 RunCommand.class,
                 WizardCommand.class,
-                ValidateCommand.class
+                ValidateCommand.class,
+                ReportCommand.class
+        },
+        footer = {
+                "",
+                "Options per command:",
+                "  run / -r           Migration ETL pipeline",
+                "                       --config <path>     Default: db-converter.properties",
+                "  wizard / -w       Interactive config wizard (no options)",
+                "  validate / -v     Test connections to both databases",
+                "                       --config <path>     Default: db-converter.properties",
+                "  report / -rp      HTML report comparing source vs target",
+                "                       --config <path>     Default: db-converter.properties",
+                "                       --output/-o <path>  Default: report-<ts>.html",
+                "                       --samples/-s <n>    Default: 5",
+                "",
+                "Examples:",
+                "  to-db-converter --run",
+                "  to-db-converter --run --config my-config.properties",
+                "  to-db-converter --wizard",
+                "  to-db-converter --validate --config custom.properties",
+                "  to-db-converter --report",
+                "  to-db-converter --report --samples 10 --output comparison.html"
         }
 )
 public class Main implements Runnable {
 
     public static void main(String[] args) {
-        int exitCode = new CommandLine(new Main()).execute(args);
+        CommandLine cmd = new CommandLine(new Main());
+        cmd.setParameterExceptionHandler((ex, argv) -> {
+            System.err.println("Error: " + ex.getMessage());
+            System.err.println("Use 'to-db-converter --help' for usage information.");
+            return 2;
+        });
+        int exitCode = cmd.execute(args);
         System.exit(exitCode);
     }
 
     @Override
     public void run() {
-        // No arguments provided - show brief help
-        System.out.println();
         System.out.println("TO_DB Converter - SQL to MongoDB Migration Tool");
-        System.out.println();
-        System.out.println("Usage:");
-        System.out.println("  to-db-converter --wizard          Launch interactive configuration wizard");
-        System.out.println("  to-db-converter --run             Run conversion using config file");
-        System.out.println("  to-db-converter --run --config X  Run conversion using specified config file");
-        System.out.println("  to-db-converter --validate        Test database connections");
-        System.out.println("  to-db-converter --help            Show this help message");
-        System.out.println("  to-db-converter --version         Show version");
-        System.out.println();
-        System.out.println("Default config file: db-converter.properties");
-        System.out.println();
+        System.out.println("Use 'to-db-converter --help' for usage information.");
     }
 }

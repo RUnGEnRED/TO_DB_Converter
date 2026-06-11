@@ -71,6 +71,9 @@ java -jar target/to-db-converter-1.0.0.jar run
 # 3c. Weryfikacja połączeń (bez migracji)
 java -jar target/to-db-converter-1.0.0.jar validate
 
+# 3d. Generowanie raportu HTML przed/po migracji
+java -jar target/to-db-converter-1.0.0.jar report
+
 # 4. Zatrzymanie środowiska
 docker compose down -v
 ```
@@ -82,8 +85,9 @@ docker compose down -v
 | `run` | `-r`, `--run` | Wykonuje pełną migrację z pliku `db-converter.properties` |
 | `wizard` | `-w`, `--wizard` | Uruchamia interaktywny TUI do konfiguracji |
 | `validate` | `-v`, `--validate` | Testuje połączenia do obu baz bez wykonywania migracji |
+| `report` | `-rp`, `--report` | Generuje raport HTML z porównaniem źródła (PostgreSQL) i celu (MongoDB) |
 
-Każda komenda akceptuje opcjonalny parametr `--config=<ścieżka>` wskazujący niestandardowy plik konfiguracyjny.
+Każda komenda akceptuje opcjonalny parametr `--config=<ścieżka>` wskazujący niestandardowy plik konfiguracyjny. Komenda `report` dodatkowo akceptuje `--output=<ścieżka>` oraz `--samples=<N>` (liczba próbek na tabelę/kolekcję).
 
 ## 2.4. Plik konfiguracyjny `db-converter.properties`
 
@@ -674,6 +678,7 @@ Kolekcje typu `CHILD_ENTITY` z EMBED są **pomijane** przy ładowaniu (już są 
 | `cli/commands/RunCommand.java` | Komenda `run` — pełna migracja |
 | `cli/commands/WizardCommand.java` | Komenda `wizard` — TUI kreator |
 | `cli/commands/ValidateCommand.java` | Komenda `validate` — test połączeń |
+| `cli/commands/ReportCommand.java` | Komenda `report` — generowanie raportu HTML |
 
 ## 8.2. Połączenia (connection)
 
@@ -747,7 +752,13 @@ Kolekcje typu `CHILD_ENTITY` z EMBED są **pomijane** przy ładowaniu (już są 
 | `DateUtils.java` | Konwersje dat: Timestamp/LocalDate/LocalDateTime/Instant/PgArray/PGobject |
 | `StringUtils.java` | Sanityzacja stringów (escape dla MongoDB, error sanitization) |
 
-## 8.11. Wyjątki (exception)
+## 8.11. Raport (report)
+
+| Plik | Odpowiedzialność |
+|------|-----------------|
+| `report/HtmlReportGenerator.java` | Generuje samodzielny plik HTML z porównaniem źródła (schemat + sample data) i celu (kolekcje + sample dokumenty), mapowaniem relacji i konfiguracją wzorców |
+
+## 8.12. Wyjątki (exception)
 
 | Plik | Kiedy rzucany |
 |------|---------------|

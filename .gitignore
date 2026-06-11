@@ -56,6 +56,7 @@ docs/**
 # Temporary
 temp/
 logs/
+reports/
 
 # Agentic tools
 .agents/

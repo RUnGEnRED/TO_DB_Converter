@@ -65,7 +65,7 @@ Unlike naive migration tools that dump tables as-is, this converter intelligentl
 | **🔗 Dual Relationship Strategy** | Per-edge EMBED/REFERENCE with safety fuse for unbounded arrays |
 | **🛡️ 3-Layer EMBED+Outlier Validation** | Wizard warning / summary warning / pre-flight runtime crash |
 | **🎛️ Interactive TUI Wizard** | JLine3-based 4-step wizard with matrix navigation and inline pattern config |
-| **🔧 CLI Interface** | Picocli-powered `run`, `wizard`, `validate` commands |
+| **🔧 CLI Interface** | Picocli-powered `run`, `wizard`, `validate`, `report` commands |
 | **🐳 Dockerized Test Environment** | PostgreSQL 16, MongoDB 7, pgAdmin — seed data auto-initialized |
 | **✅ 139 Automated Tests** | Unit tests (JUnit 5 + AssertJ) + integration tests (H2 → MongoDB) |
 
@@ -114,6 +114,9 @@ java -jar target/to-db-converter-1.0.0.jar run
 # 3c. Validate connections only
 java -jar target/to-db-converter-1.0.0.jar validate
 
+# 3d. Generate HTML comparison report (after migration)
+java -jar target/to-db-converter-1.0.0.jar report
+
 # 4. Stop environment
 docker compose down -v
 ```
@@ -129,8 +132,9 @@ docker compose down -v
 | `run` | `-r`, `--run` | Full ETL: extract → transform → load |
 | `wizard` | `-w`, `--wizard` | 4-step interactive TUI configuration |
 | `validate` | `-v`, `--validate` | Test source + target connections |
+| `report` | `-rp`, `--report` | Generate HTML report comparing source and target databases |
 
-Each command accepts `--config=<path>` for a custom configuration file.
+The `run`, `validate`, and `report` commands accept `--config=<path>` for a custom configuration file. The `report` command also accepts `--output=<path>` and `--samples=<N>`.
 
 ### Step-by-Step
 
@@ -175,6 +179,22 @@ java -jar target/to-db-converter-1.0.0.jar run
 ```
 
 The system prints a live log of each stage and a summary on completion.
+
+#### 6. Generate Comparison Report
+
+After migration, generate an HTML report comparing source and target databases:
+
+```bash
+java -jar target/to-db-converter-1.0.0.jar report
+```
+
+The report (`report-<timestamp>.html`) includes:
+- Source schema (tables, columns, types, PKs, FKs, sample data)
+- Target collections (documents, sample JSON)
+- Relationship mapping (child→parent, cardinality, EMBED/REFERENCE)
+- Design pattern configuration per table
+
+Use `--output` for a custom path and `--samples` to control the number of sample rows/documents.
 
 ---
 
@@ -273,7 +293,7 @@ TO_DB_Converter/
 ├── src/
 │   ├── main/java/com/todbconverter/
 │   │   ├── Main.java                    # Entry point + Picocli dispatch
-│   │   ├── cli/commands/                # Run, Wizard, Validate commands
+│   │   ├── cli/commands/                # Run, Wizard, Validate, Report commands
 │   │   ├── config/
 │   │   │   ├── DatabaseConfig.java      # .properties load/save, strategies, patterns
 │   │   │   └── EdgeStrategyRegistry.java # Per-edge EMBED/REFERENCE lookup
@@ -294,6 +314,8 @@ TO_DB_Converter/
 │   │   │   │       └── ApproximationPattern.java
 │   │   │   └── loader/
 │   │   │       └── MongoDBLoader.java    # bulkWrite, indexes, embed-skip
+│   │   ├── report/
+│   │   │   └── HtmlReportGenerator.java  # HTML report generation
 │   │   ├── exception/                    # ConverterException hierarchy
 │   │   ├── service/
 │   │   │   └── ETLPipeline.java          # Orchestrator: extract → transform → load
@@ -358,5 +380,5 @@ This project is licensed under the terms of the MIT license.
 ---
 
 <p align="center">
-  <sub>Built with Java 21 • JDBC • MongoDB Sync Driver • JLine 3 • Picocli</sub>
+  <sub>Built with Java 21 • JDBC • MongoDB Sync Driver • JLine 3 • Picocli • Jackson</sub>
 </p>
