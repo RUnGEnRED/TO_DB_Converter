@@ -52,6 +52,7 @@ bin/
 # Documentation
 docs/**
 !docs/DOKUMENTACJA.md
+!docs/TO_PRO_OBR.pdf
 
 # Temporary
 temp/
